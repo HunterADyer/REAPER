@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reaper"
+version = "0.1.0"
+description = "REAPER — Reverse Engineering Agent Pipeline (RE Stage). Async LLM-driven harness that reverse-engineers stripped binaries from Binary Ninja HLIL dataflow graphs."
+readme = "continue.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+# Runtime dependencies mirror requirements.txt. NOTE: binaryninja is NOT
+# here — it ships with Binja headless and is added to sys.path via
+# PYTHONPATH=$HOME/binja-headless/python (see docs/binja-module.md).
+dependencies = [
+    "neo4j>=5.0",
+    "httpx>=0.27",
+    "pydantic>=2.0",
+    "aiosqlite>=0.20",
+]
+
+[project.scripts]
+reaper = "reaper.run:main"
+
+[tool.setuptools]
+packages = [
+    "reaper",
+    "reaper.harness",
+    "reaper.tools",
+    "reaper.agents",
+    "reaper.agents.prompts",
+    "reaper.infra",
+]
+
+# The repository root IS the `reaper` package (the design doc's `reaper/...`
+# paths map directly onto this directory). Map the package onto "." so
+# `pip install -e .` exposes `reaper.harness`, `reaper.tools`, etc.
+[tool.setuptools.package-dir]
+"reaper" = "."

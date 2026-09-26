@@ -1,0 +1,34 @@
+[neo4j]
+uri = "bolt://localhost:7687"
+user = "neo4j"
+password = "reaper"
+
+[vllm]
+base_url = "http://localhost:8010/v1"
+model = "deepseek-ai/DeepSeek-V4-Flash-0731"
+
+[thinking_levels]
+# Maps to max_completion_tokens (TOTAL budget: thinking + response).
+# Structured JSON responses typically consume 200-2000 tokens, so
+# these values leave headroom beyond the thinking portion.
+# minimal=1024, low=4096, medium=12288, high=20480, max=40960.
+pass0_type_recovery = "high"
+pass1_rename = "minimal"
+pass2_review = "max"
+critic = "high"
+investigation = "high"
+merge = "medium"
+resynthesis = "high"
+scheduler = "low"
+
+[limits]
+max_critic_rejections = 3          # after this, accept at 'speculation' and move on
+max_resynthesis_iterations = 5     # prevent investigation<->resynthesis infinite loop
+shadow_copy_hops = 2               # N-hop neighborhood for shadow checkouts
+task_timeout_seconds = 600         # stale task timeout
+max_concurrent_agents = 8          # parallel vLLM sessions
+max_context_tokens = 32768         # truncation limit for context assembly
+
+[paths]
+data_dir = "reaper/data"
+traces_dir = "reaper/data/traces"

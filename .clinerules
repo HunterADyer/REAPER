@@ -1,0 +1,62 @@
+# REAPER RE Stage — Project Rules
+
+## What This Is
+Reverse engineering harness: 28 deliverables across 8 phases.
+Fully async Python pipeline that uses LLM agents (via local vLLM) to
+reverse-engineer stripped binaries using Binary Ninja HLIL dataflow graphs.
+
+## Reference Docs (read on demand, not all at once)
+- `docs/design-re-stage.md` — THE design spec (~1800 lines). Read ONLY the
+  section for your current deliverable (search "### Deliverable X.Y").
+- `docs/binja-module.md` — Binja 6.0 API surface spec. Read when implementing
+  anything in `reaper/tools/` that touches Binja.
+- `docs/skills/patterns.md` — Reusable code patterns. Read before implementing.
+- `docs/skills/cross-references.md` — Constructor/import verification table.
+  CHECK before writing any constructor, import, or config access.
+- `docs/skills/progress.md` — Track completed deliverables. Update after each.
+
+## Workflow: Implementing a Deliverable
+1. Read the deliverable section in design-re-stage.md
+2. Check cross-references.md for constructor signatures + imports
+3. Read patterns.md for the relevant code template
+4. Implement the code in the specified file path
+5. Write the test described in the deliverable's "Test:" section
+6. Run the test, fix until green
+7. Update progress.md — check the box, add notes on anything surprising
+8. Update patterns.md — fill in any placeholder with a verified working example
+
+## Hard Rules (violating these BREAKS the system)
+
+### Async
+- ALL I/O is async: `async def` + `await` everywhere
+- `httpx.AsyncClient` (not requests), `neo4j.AsyncDriver`, `aiosqlite`
+- Never call blocking I/O in an async function
+
+### vLLM Structured Output
+- Use `extra_body={"structured_outputs": schema, "disable_any_whitespace": True}`
+- NEVER use `guided_json` — it is SILENTLY IGNORED by vLLM
+- Schema from `model.model_json_schema()` (Pydantic)
+- `max_completion_tokens` = thinking + response combined
+
+### Neo4j
+- ALL writes use `MERGE`, never `CREATE` — idempotent by design
+- No cross-store atomicity: Neo4j first, then SQLite. Log failures, don't rollback
+
+### SQLite (aiosqlite)
+- Every connection: `PRAGMA journal_mode=WAL` + `PRAGMA foreign_keys=ON`
+- All writes behind `asyncio.Lock()` (one lock per DB instance)
+- Reads are lock-free (WAL allows concurrent reads)
+
+### Binary Ninja
+- Binja 6.0 headless, NOT pip-installable
+- Needs `PYTHONPATH=$HOME/binja-headless/python` — do NOT add to requirements.txt
+- Use `func.hlil.instructions` (NOT `func.hlil.root` — doesn't exist in 6.0)
+- String refs: look for `HighLevelILConstPtr` (pointer to data section), NOT `HighLevelILConstData`
+
+### Structure
+- Module-level async functions (NOT classes): build_nodes, build_edges, pin_symbols, validate_and_order, init_schema
+- All Pydantic models go in `reaper/harness/submission.py`
+- Agent prompt files go in `reaper/agents/prompts/`
+- Stable Neo4j node IDs: based on original var names, NEVER change on rename
+- Constructor signatures MUST match pipeline runner in 8.2 — check cross-references.md
+- `tomllib` (stdlib 3.11+), not the `tomli` package

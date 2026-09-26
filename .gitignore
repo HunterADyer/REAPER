@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+*.bndb
+
+# runtime data (configs/default.toml -> [paths].data_dir)
+data/
+
+# cJSON test binary (8.1) build artifacts
+eval/cjson/cjson_test
+eval/cjson/cjson_test_symbols
+eval/cjson/cJSON.*
+eval/cjson/main.c
+
+# packaging
+build/
+dist/
+*.egg-info/
+
+# local virtualenv
+.venv/
+venv/
