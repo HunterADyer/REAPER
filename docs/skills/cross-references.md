@@ -81,7 +81,7 @@ Verify each import resolves after implementing its deliverable.
 - [ ] `reaper.agents.type_recovery` → TypeRecoveryAgent (4.2)
 - [ ] `reaper.agents.investigation_agent` → InvestigationAgent (7.2)
 - [ ] `reaper.agents.resynthesis_agent` → ResynthesisAgent (7.4)
-- [ ] `reaper.infra.init_db` → init_schema (1.2)
+- [x] `reaper.infra.init_db` → init_schema (1.2)
 
 ---
 

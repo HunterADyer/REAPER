@@ -37,3 +37,12 @@ packages = [
 # `pip install -e .` exposes `reaper.harness`, `reaper.tools`, etc.
 [tool.setuptools.package-dir]
 "reaper" = "."
+
+# ---------------------------------------------------------------------------
+# pytest configuration. Dev-only tooling — not a runtime dependency.
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["."]
+

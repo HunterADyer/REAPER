@@ -1,0 +1,218 @@
+"""Submission protocol — Deliverable 3.3.
+
+Pydantic models for all agent I/O. These double as vLLM structured output
+schemas (``model_json_schema()`` -> ``structured_outputs``). Also provides
+``get_schema()`` and ``parse_response()`` helpers.
+
+Every model here is referenced by agents, dispatchers, and the harness — do
+not move models to other modules. The only agent-output models NOT in this
+module are ``StructCandidate``/``FieldAccess`` (struct_detector.py) and
+``LLMTransientError`` (llm_client.py).
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Literal
+
+from pydantic import BaseModel, ValidationError
+
+TRUTH_LEVELS = Literal[
+    "speculation", "inferred", "low_confidence", "mid_confidence", "high_confidence"
+]
+
+_TRUTH_LEVEL_VALUES = [
+    "speculation", "inferred", "low_confidence", "mid_confidence", "high_confidence"
+]
+
+
+class Rename(BaseModel):
+    node_id: str              # Neo4j node id (e.g., "0x1400:var_18")
+    llm_name: str             # verbose pothole_case
+    canon_name: str           # human-readable
+    justification: str        # free-text reasoning
+
+
+class EvidenceLink(BaseModel):
+    address_start: str        # hex
+    address_end: str          # hex
+    description: str          # what this range shows
+
+
+class Claim(BaseModel):
+    function_address: str
+    claim_text: str
+    evidence: list[EvidenceLink]
+
+
+class Submission(BaseModel):
+    renames: list[Rename] = []
+    claims: list[Claim] = []
+
+
+class CriticVerdict(BaseModel):
+    truth_level: TRUTH_LEVELS  # only used when accepted=True; ignored on rejection
+    accepted: bool
+    feedback: str
+
+
+class TaskContextSpec(BaseModel):
+    """Typed context specification — avoids bare dict in structured output."""
+
+    functions: list[str] = []           # hex addresses to include
+    include_callees: bool = False
+    include_claims: bool = False
+    include_neighborhood: bool = False
+
+
+class TaskSpec(BaseModel):
+    """Used by both review agent and investigation agent to create tasks.
+    Maps directly to TodoLedger.create_task() parameters."""
+
+    description: str
+    start_position: str       # hex address
+    goal: str
+    graph_refs: list[str] = []
+    context_spec: TaskContextSpec = TaskContextSpec()
+
+
+class ReviewOutput(BaseModel):
+    """Review agent output — renames + claims + tasks in one structured response."""
+
+    renames: list[Rename] = []
+    claims: list[Claim] = []
+    tasks: list[TaskSpec] = []
+
+
+class InvestigationResult(BaseModel):
+    answer: str
+    claims: list[Claim] = []
+    subtasks: list[TaskSpec] = []  # rich task specs, not bare strings
+
+
+class Contradiction(BaseModel):
+    claim_id_a: int
+    claim_id_b: int
+    explanation: str
+
+
+class MergedClaim(BaseModel):
+    keep_id: int
+    remove_ids: list[int]
+    merged_text: str
+
+
+class StructField(BaseModel):
+    offset: int
+    name: str
+    type_str: str             # C type string, e.g. "struct cJSON*"
+    size: int
+    confidence: TRUTH_LEVELS
+
+
+class StructDefinition(BaseModel):
+    struct_name: str
+    fields: list[StructField]
+
+
+class CriticOutcome(BaseModel):
+    """Returned by harness evaluate_claim() to caller (not an LLM output)."""
+
+    accepted: bool
+    feedback: str = ""
+
+
+class FunctionSummary(BaseModel):
+    """Pass 1 function-level output — name + summary."""
+
+    llm_name: str
+    canon_name: str
+    summary: str              # one-paragraph purpose description
+
+
+class ResynthesisResult(BaseModel):
+    contradictions: list[Contradiction] = []
+    merged_claims: list[MergedClaim] = []
+    new_tasks: list[TaskSpec] = []
+
+
+class MergeResult(BaseModel):
+    """Merge agent output — Deliverable 3.5 (design § 3.5).
+
+    Added here because every agent-output model lives in this module.
+    """
+
+    status: Literal["applied", "resolved", "rejected"]
+    conflicts_resolved: list[dict] = []
+    new_tasks: list[int] = []
+
+
+class MergeDecision(BaseModel):
+    """Merge agent conflict-resolution decision (structured LLM output).
+
+    Internal to the merge flow (not part of the public protocol): when a
+    submission conflicts with master, the LLM either accepts/resolves each
+    conflict (``resolutions``) or rejects the submission entirely
+    (``reject=True``), in which case new TODO tasks are created for
+    follow-up investigation.
+    """
+
+    reject: bool = False
+    reasons: list[str] = []
+    resolutions: list[dict] = []  # [{node_id, field, value}] — chosen values
+
+
+def get_schema(model_class) -> dict:
+    """Return model_class.model_json_schema() for vLLM structured_output."""
+    return model_class.model_json_schema()
+
+
+def parse_response(model_class, text: str):
+    """Parse JSON text into the given Pydantic model.
+
+    Accepts either bare JSON or text with a fenced ```json ...``` block
+    (some models wrap structured output in fences). Raises ValidationError
+    if the text does not parse into the model.
+    """
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start == -1 or end <= start:
+            # No JSON object present — validating the raw text yields a clear
+            # pydantic.ValidationError explaining what the model expects.
+            return model_class.model_validate(cleaned)
+        data = json.loads(cleaned[start : end + 1])
+    return model_class.model_validate(data)
+
+__all__ = [
+    "TRUTH_LEVELS",
+    "_TRUTH_LEVEL_VALUES",
+    "Rename",
+    "EvidenceLink",
+    "Claim",
+    "Submission",
+    "CriticVerdict",
+    "CriticOutcome",
+    "TaskContextSpec",
+    "TaskSpec",
+    "ReviewOutput",
+    "InvestigationResult",
+    "Contradiction",
+    "MergedClaim",
+    "StructField",
+    "StructDefinition",
+    "FunctionSummary",
+    "ResynthesisResult",
+    "MergeResult",
+    "MergeDecision",
+    "get_schema",
+    "parse_response",
+]
+

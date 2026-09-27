@@ -89,7 +89,35 @@ class Store:
             return result
 ```
 
-<!-- FILL: After implementing 1.5, paste verified Ledger.add_claim() here -->
+<!-- VERIFIED (1.5 harness/ledger.py) — claim insert with evidence, behind lock:
+Note add_claim() also dovetails with the graph: it INSERT OR IGNOREs the
+function row (idempotent, safe even if register_functions_from_graph() has not
+run), and claims are always born with truth_level = NULL for the critic.
+
+    async def add_claim(self, function_address, claim_text, submitted_by, evidence):
+        db = self._require_ready()
+        now = _now()
+        async with self._write_lock:
+            await db.execute(
+                "INSERT OR IGNORE INTO functions (address) VALUES (?)",
+                (function_address,),
+            )
+            cursor = await db.execute(
+                "INSERT INTO claims (function_address, claim_text, submitted_by, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (function_address, claim_text, submitted_by, now, now),
+            )
+            claim_id = int(cursor.lastrowid)
+            for ev in evidence:
+                await db.execute(
+                    "INSERT INTO evidence_links (claim_id, address_start, "
+                    "address_end, description) VALUES (?, ?, ?, ?)",
+                    (claim_id, ev.get("address_start"), ev.get("address_end"),
+                     ev.get("description")),
+                )
+            await db.commit()
+            return claim_id
+--> 
 
 ---
 

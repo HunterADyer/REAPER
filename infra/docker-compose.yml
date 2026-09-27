@@ -1,0 +1,33 @@
+# REAPER Neo4j instance — Deliverable 1.2.
+#
+# Neo4j 5.x container for the RE Stage graph store. Bolt on :7687 (driver
+# traffic), HTTP browser on :7474. Persistence via a named volume mounted at
+# /data (Neo4j 5 stores the DB under /data/databases).
+#
+# Credentials match configs/default.toml [neo4j] (user=neo4j, password=reaper).
+# The container ONLY recreates/uses the DB from these volumes; the schema
+# itself is installed by `reaper.infra.init_db.init_schema` (schema.cypher) —
+# run that once, then re-running it is idempotent.
+
+services:
+  neo4j:
+    image: neo4j:5.26
+    container_name: reaper-neo4j
+    restart: unless-stopped
+    ports:
+      - "7687:7687"   # Bolt (async driver)
+      - "7474:7474"   # HTTP browser
+    environment:
+      - NEO4J_AUTH=neo4j/reaper
+      # neo4j 5.26+ enforces a min 8-char password; our config password is
+      # the 6-char "reaper" (matches configs/default.toml), so relax the floor.
+      - NEO4J_dbms_security_auth__minimum__password__length=4
+      - NEO4J_server_memory_heap_initial__size=512m
+      - NEO4J_server_memory_heap_max__size=1G
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
