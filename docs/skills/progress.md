@@ -117,11 +117,22 @@ Phase 8:                8.1 → 8.2 → 8.3
 
 ## Phase 3: Context Assembly + Harness Core
 
-- [ ] **3.1** Context Assembler
-  <!-- NOTES: ContextAssembler, 6 methods, truncation strategy for for_subgraph -->
+- [x] **3.1** Context Assembler
+  <!-- NOTES: ContextAssembler — 6 public methods (for_function, for_variable,
+       for_evidence, for_struct_candidate, for_task, for_subgraph) with the
+       3-step truncation ladder in for_subgraph (drop sub-mid claims →
+       summarize HLIL → drop least-connected). Graceful degradation: any
+       Neo4j/ledger read failure logs and omits that section only.
+       7 tests green (ScriptedExtractor string/text contract + responder
+       driver + stub ledger). -->
 
-- [ ] **3.2** Shadow Copy Manager
-  <!-- NOTES: ShadowCopyManager, checkout/diff/apply, monotonic version counter -->
+- [x] **3.2** Shadow Copy Manager
+  <!-- NOTES: ShadowCopyManager — checkout (N-hop via :CALL/:CONTAINS, claims for
+       function-like nodes), diff (master_version > checkout_version AND master
+       value changed from what the agent saw => CONFLICT; claims never conflict),
+       apply (Neo4j-first via MERGE, ledger second, version counter). Verified
+       with stateful in-memory doubles including the design's two-checkout
+       conflict scenario. 6 tests green. -->
 
 - [x] **3.3** Submission Protocol
   <!-- NOTES: All Pydantic models, get_schema(), parse_response().
@@ -137,16 +148,32 @@ Phase 8:                8.1 → 8.2 → 8.3
        schema validity, truth-level + missing-feedback validation, all
        parse_response paths). -->
 
-- [ ] **3.4** BNDB Writeback
-  <!-- NOTES: BNDBWriter, _rename_map for tracking Binja's current var names -->
+- [x] **3.4** BNDB Writeback
+  <!-- NOTES: BNDBWriter — rename_function/rename_variable (with _rename_map so
+       SECOND+ renames of the same stable node id still resolve), set_type,
+       save() (require_binja RuntimeError without Binja; issues bv.save() when
+       present), async close() hook. 10 tests green (Binja absent: fake view
+       flows; simulated Binja: real save path). -->
 
-- [ ] **3.5** Merge Agent
-  <!-- NOTES: MergeAgent, conflict resolution via LLM, BNDB writeback on apply -->
+- [x] **3.5** Merge Agent
+  <!-- NOTES: MergeAgent — diff-vs-baseline, no-conflict apply path, LLM
+       resolve/reject (MergeDecision), follow-up TaskSpec tasks on reject,
+       BNDB writeback on successful apply, no-LLM auto-accept path. 4 tests
+       green with stateful doubles (applied/resolved/rejected/auto-accept). -->
 
 ## Phase 4: Type Recovery (Pass 0)
 
-- [ ] **4.1** Struct Access Pattern Detector
-  <!-- NOTES: StructAccessDetector, StructCandidate/FieldAccess models, grouping strategy -->
+- [x] **4.1** Struct Access Pattern Detector
+  <!-- NOTES: implemented — StructAccessDetector walks HLIL with a
+       context-aware (read/write) walker, detecting *(base+N) deref-of-add,
+       STRUCT_FIELD/DEREF_FIELD, and plain-deref patterns; within-function
+       grouping by base variable; cross-function grouping ONLY on a meaningful
+       Binja type (unknown/void/$unknown bases stay separate — false-positive
+       grouping avoided). FieldAccess size from C type string mapping.
+       4 tests green (fake_binja): multiple offsets [0,8,16,24], cross-function
+       merge on 'struct cJSON*', unknown-type isolation, read/write flag,
+       single-instruction address report. Caught + fixed an inverted
+       const/non-const side selection in _deref_access during review. -->
 
 - [ ] **4.2** Type Recovery Agent
   <!-- NOTES: TypeRecoveryAgent, StructDefinition output, claims at 'inferred' for v1 -->
