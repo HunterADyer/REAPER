@@ -118,7 +118,7 @@ Also in struct_detector.py (NOT submission.py):
 
 ## Config Keys (configs/default.toml)
 
-<!-- FILL: After implementing 1.1, verify all these paths parse from the TOML -->
+<!-- ALL verified via tomllib against configs/default.toml in Deliverable 1.1. -->
 
 - [x] `config['neo4j']['uri']`, `['user']`, `['password']`
 - [x] `config['vllm']['base_url']`, `['model']`

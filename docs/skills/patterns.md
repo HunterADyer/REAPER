@@ -192,7 +192,12 @@ class SomeAgent:
 Prompt text lives in `reaper/agents/prompts/<agent_name>.txt`, loaded once at
 `__init__` time (read the file, store as `self.prompt`).
 
-<!-- FILL: After implementing 5.1, paste verified RenameVariableAgent class here -->
+<!-- VERIFIED (5.1 agents/rename_variable.py + 6.2 review_agent.py): the
+standard agent skeleton is: load self.prompt from agents/prompts/<name>.txt
+at __init__; every run() opens a session, calls llm.send(..., structured_output=
+get_schema(OutputModel)), parses with parse_response, and destroy_session in a
+finally. The LLM client is never closed by agents (run.py owns llm.close()).
+See Pattern 1 for the exact call; each agent only varies prompt/schema/keys. -->
 
 ---
 
