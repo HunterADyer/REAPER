@@ -107,3 +107,46 @@ async def test_get_task_missing_returns_none(tmp_path):
         assert await todo.get_task(424242) is None
     finally:
         await todo.close()
+
+
+@pytest.mark.asyncio
+async def test_get_pending_tasks_returns_only_pending(tmp_path):
+    todo = TodoLedger(str(tmp_path / "todo.db"))
+    await todo.init()
+    try:
+        t1 = await todo.create_task("a", {}, "0x1", "g", [])
+        t2 = await todo.create_task("b", {}, "0x2", "g", [])
+        await todo.assign_task(t1, "sess")
+        pending = {t["id"] for t in await todo.get_pending_tasks()}
+        assert pending == {t2}
+    finally:
+        await todo.close()
+
+
+@pytest.mark.asyncio
+async def test_reset_stale_in_progress_resets_old_tasks(tmp_path):
+    from datetime import datetime, timezone, timedelta
+    todo = TodoLedger(str(tmp_path / "todo.db"))
+    await todo.init()
+    try:
+        stale = await todo.create_task("old", {}, "0x1", "g", [])
+        fresh = await todo.create_task("new", {}, "0x2", "g", [])
+        await todo.assign_task(stale, "s1")
+        await todo.assign_task(fresh, "s2")
+        # Backdate the stale task 10 minutes so timeout=5s flags it.
+        old_ts = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        await todo._db.execute(
+            "UPDATE tasks SET created_at = ? WHERE id = ?", (old_ts, stale)
+        )
+        await todo._db.commit()
+
+        count = await todo.reset_stale_in_progress(5)
+        assert count == 1
+        stale_task = await todo.get_task(stale)
+        fresh_task = await todo.get_task(fresh)
+        assert stale_task["status"] == "pending"
+        assert stale_task["assigned_to"] is None
+        assert fresh_task["status"] == "in_progress"  # not stale
+    finally:
+        await todo.close()
+

@@ -171,6 +171,22 @@ class TodoLedger:
             row = await cursor.fetchone()
             return int(row[0]) if row else 0
 
+    async def requeue_task(self, task_id: int, feedback: str = "") -> None:
+        """Return task to 'pending' WITHOUT bumping rejection_count.
+
+        Used by the investigation loop (7.3) to retry a task that spawned
+        subtasks or whose claims were all rejected — counting that as a
+        'rejection' would be misleading (it is a legitimate retry).
+        """
+        db = self._require_ready()
+        async with self._write_lock:
+            await db.execute(
+                "UPDATE tasks SET status = 'pending', assigned_to = NULL, "
+                "critic_feedback = ? WHERE id = ?",
+                (feedback, task_id),
+            )
+            await db.commit()
+
     async def delete_task(self, task_id: int) -> None:
         """Remove a merged-away task. Acquires _write_lock."""
         db = self._require_ready()
@@ -222,6 +238,50 @@ class TodoLedger:
             if all_done:
                 ready.append(t)
         return ready
+
+    async def get_pending_tasks(self) -> list[dict]:
+        """All tasks still in 'pending' status (regardless of dependencies).
+
+        Used by the scheduler (7.1) to review pending descriptions for merge /
+        decompose recommendations.
+        """
+        tasks = await self._all_tasks()
+        return [t for t in tasks if t["status"] == "pending"]
+
+    async def reset_stale_in_progress(self, timeout_seconds: int) -> int:
+        """Reset in_progress tasks started more than ``timeout_seconds`` ago
+        back to pending (stale task check, design § 7.1). Returns the count of
+        tasks reset. Tasks whose timestamp cannot be parsed are treated as
+        stale (conservative — never strand an in_progress task forever).
+        """
+        tasks = await self._all_tasks()
+        now = datetime.now(timezone.utc)
+        stale_ids: list[int] = []
+        for t in tasks:
+            if t["status"] != "in_progress":
+                continue
+            started_at = t.get("created_at") or ""
+            try:
+                started = datetime.fromisoformat(started_at
+                                                 .replace("Z", "+00:00"))
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                stale = (now - started).total_seconds() > int(timeout_seconds)
+            except ValueError:
+                stale = True  # unparseable -> conservative reset
+            if stale:
+                stale_ids.append(t["id"])
+        if not stale_ids:
+            return 0
+        db = self._require_ready()
+        async with self._write_lock:
+            for task_id in stale_ids:
+                await db.execute(
+                    "UPDATE tasks SET status = 'pending', assigned_to = NULL "
+                    "WHERE id = ?", (task_id,)
+                )
+            await db.commit()
+        return len(stale_ids)
 
     async def is_empty(self) -> bool:
         """All tasks are 'completed'. No pending or in_progress."""
