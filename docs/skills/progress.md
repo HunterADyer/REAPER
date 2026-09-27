@@ -175,12 +175,23 @@ Phase 8:                8.1 → 8.2 → 8.3
        single-instruction address report. Caught + fixed an inverted
        const/non-const side selection in _deref_access during review. -->
 
-- [ ] **4.2** Type Recovery Agent
-  <!-- NOTES: TypeRecoveryAgent, StructDefinition output, claims at 'inferred' for v1 -->
+- [x] **4.2** Type Recovery Agent
+  <!-- NOTES: TypeRecoveryAgent(llm_client, context_asm, config) — assembles
+       per-candidate context, requests the StructDefinition structured schema,
+       returns None on empty fields (no struct). Records one claim per involved
+       function at truth_level='inferred' with evidence = access instruction
+       addresses (v1; critic may revisit in Pass 2). Uses context_asm.ledger.
+       3 tests green (schema request, inferred claims, empty->None). -->
 
-- [ ] **4.3** Graph Rebuild on Type Recovery
-  <!-- NOTES: GraphRebuilder, apply struct → delete old nodes → create new → revalidate.
-       Caller handles ledger.register_functions_from_graph() after all structs applied -->
+- [x] **4.3** Graph Rebuild on Type Recovery
+  <!-- NOTES: GraphRebuilder(extractor, bndb_writer, neo4j_driver) — builds a C
+       struct string, defines the type in Binja (BNDBWriter.set_struct_type
+       added, best-effort), MERGEs a :Struct node, re-runs the struct detector,
+       creates explicit per-field :Variable nodes + :CONTAINS/:FIELD_OF edges,
+       prunes obsolete @0x-offset placeholder Variables, re-runs
+       validate_and_order. apply_struct(struct_def, function_addresses=None)
+       falls back to extractor functions. 4 tests green (field graph,
+       fallback, noop, unmatched-offset skip). -->
 
 ## Phase 5: Initial Sweep (Pass 1)
 

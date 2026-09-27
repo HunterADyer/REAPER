@@ -110,6 +110,30 @@ class BNDBWriter:
             func.return_type = type_str
         return func
 
+    def set_struct_type(self, struct_name: str, struct_str: str) -> bool:
+        """Define a user struct type in Binja (design § 4.3 step 2).
+
+        Best-effort: returns True when the type was actually registered with
+        Binja's ``define_user_type``; returns False and records the struct
+        string on ``bv.user_types`` (a plain-dict container) when Binja is
+        absent or parsing fails — never raises, so type recovery cannot crash
+        the pipeline.
+        """
+        if hasattr(self.bv, "define_user_type"):
+            try:
+                parsed = self.bv.parse_type_string(struct_str)
+                name = parsed[0] if isinstance(parsed, tuple) else parsed
+                self.bv.define_user_type(name, parsed[1] if isinstance(parsed, tuple) else None)
+                return True
+            except Exception:
+                log.exception("set_struct_type(%s) failed via Binja API", struct_name)
+                return False
+        # No Binja (or no type API) — record on a container for tests/observability.
+        if not hasattr(self.bv, "user_types"):
+            self.bv.user_types = {}
+        self.bv.user_types[struct_name] = struct_str
+        return False
+
     def save(self) -> str:
         """Persist the BinaryView to the BNDB file (bv.save). Requires Binja."""
         require_binja(
