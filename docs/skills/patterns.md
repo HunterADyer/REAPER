@@ -26,7 +26,26 @@ self.llm.destroy_session(session_id)
 return result
 ```
 
-<!-- FILL: After implementing 1.3 + 5.1, paste verified RenameVariableAgent.run() here -->
+<!-- VERIFIED (5.1 agents/rename_variable.py) — the exact call that every
+agent here mimics (review/critic/resynthesis use the identical shape):
+
+    async def run(self, func_address, var_id, include_callee_renames=False):
+        context = await self.context_asm.for_variable(
+            func_address, var_id, include_callee_renames=include_callee_renames)
+        session_id = f"rename_{func_address}_{var_id}"
+        try:
+            await self.llm.create_session(session_id, self.prompt)
+            response = await self.llm.send(
+                session_id, context,
+                thinking_level=self.config["thinking_levels"]["pass1_rename"],
+                structured_output=get_schema(Submission))
+            result = parse_response(Submission, response)
+        finally:
+            self.llm.destroy_session(session_id)
+        return result
+
+NOTE: only the prompt, session prefix, schema, and thinking key differ
+between agents. Never close the client here — run.py owns llm.close(). -->
 
 ---
 
@@ -53,7 +72,24 @@ async with neo4j_driver.session() as session:
         )
 ```
 
-<!-- FILL: After implementing 2.2, paste verified build_nodes() MERGE loop here -->
+<!-- VERIFIED (5.2 harness/pass1_dispatcher.py) — rename apply; id-based key for
+variables, address-keyed for functions. NEVER str.format() a query containing
+`{...}` map syntax — use concatenation for labels:
+
+    async def _merge_rename(self, rn: Rename) -> None:
+        async with self.neo4j_driver.session() as session:
+            if ":" in rn.node_id:
+                await session.run(
+                    "MERGE (n {id: $id}) "
+                    "SET n.llm_name = $llm, n.canon_name = $canon",
+                    {"id": rn.node_id, "llm": rn.llm_name, "canon": rn.canon_name})
+            else:
+                await session.run(
+                    "MERGE (n:Function {address: $id}) "
+                    "SET n.llm_name = $llm, n.canon_name = $canon",
+                    {"id": rn.node_id, "llm": rn.llm_name, "canon": rn.canon_name})
+
+Identical discipline in graph rebuild (4.3): all writes MERGE, idempotent. -->
 
 ---
 
@@ -179,7 +215,31 @@ IMPORTANT: Within a single function, variable renames are SEQUENTIAL (each
 rename updates Neo4j immediately, next rename sees the updated state).
 Parallelism is ACROSS functions at the same traversal level.
 
-<!-- FILL: After implementing 5.2, paste verified Pass1Dispatcher.run() level loop here -->
+<!-- VERIFIED (5.2 harness/pass1_dispatcher.py) — the level loop. Sequential
+WITHIN a function (renames hit Neo4j immediately, next rename must see them);
+parallel ACROSS functions at the same level via asyncio.gather + a Semaphore;
+levels are AWAITED before the next:
+
+    async def run(self) -> None:
+        functions = await self._functions_ordered()
+        max_level = max(level for _, level in functions)
+        for level in range(max_level + 1):
+            addrs = [a for a, lvl in functions if lvl == level]
+            if not addrs:
+                continue
+            await asyncio.gather(*(self._process_function(a) for a in addrs))
+            await self._log("pass1_level_done", {"level": level, "functions": addrs})
+
+    async def _process_function(self, func_addr):
+        async with self._semaphore:
+            for var_id in await self._query_nodes(func_addr, "Variable"):
+                sub = await self.rename_agent.run(func_addr, var_id)
+                await self._apply_submission(sub)   # SEQUENTIAL per function
+            ...
+
+async def _query_nodes:  # label via concatenation, not .format()
+    query = ("MATCH (f:Function {address: $fa})-[:CONTAINS]->(n:" + label +
+             ") WHERE NOT coalesce(n.pinned, false) RETURN n.id AS id") -->
 
 ---
 
@@ -206,7 +266,24 @@ if not outcome.accepted:
     # ... retry (agent produces new claim, old one was deleted by critic) ...
 ```
 
-<!-- FILL: After implementing 6.1 + 6.3, paste verified critic loop here -->
+<!-- VERIFIED (6.3 harness/pass2_dispatcher.py) — claims first, then critic;
+claims are excluded from the merge Submission (already in the ledger — else
+duplicate rows via shadow apply):
+
+    claim_id = await self.ledger.add_claim(
+        claim.function_address, claim.claim_text, f"pass2:{func_addr}",
+        [e.model_dump() for e in claim.evidence])
+    outcome = await self.critic.evaluate_claim(
+        claim_id, claim, func_addr, "review_agent")
+    if outcome.accepted:
+        accepted_claims.append(claim)
+    # ... after all claims + task critics:
+    if review.renames and (not review.claims or accepted_claims):
+        await self.merge_agent.attempt_merge(
+            f"pass2_{func_addr}", Submission(renames=review.renames, claims=[]))
+
+The critic itself (agents/critic_agent.py) owns rejection counting and deletes
+the rejected claim; the CALLER only re-invokes the agent with feedback. -->
 
 ---
 
@@ -243,9 +320,27 @@ for instr in func.hlil.instructions:
             walk_expr(operand)
 ```
 
-<!-- FILL: After implementing 2.3, paste verified instruction walker here.
-     Pay special attention to the operand names (dest/src/params) — verify
-     against binja-module.md § HLIL instruction types -->
+<!-- VERIFIED — use reaper.tools._compat.walk_expr() / Op instead of raw Binja
+enums (works without Binja, against fake HLIL too). For a context-aware walk
+(access_type read/write) the struct detector (4.1) re-implements the same
+dispatch with a `write` flag propagated ONLY through HLIL_ASSIGN.dest:
+
+    def _walk(self, expr, func_addr, write):
+        if expr is None or not hasattr(expr, "operation"):
+            return
+        op = expr.operation
+        if op == Op.HLIL_DEREF:
+            self._deref_access(expr, func_addr, write)
+        elif op in (Op.HLIL_STRUCT_FIELD, Op.HLIL_DEREF_FIELD):
+            self._field_access(expr, func_addr, write)
+        if op in _BINARY_OPS:
+            self._walk(expr.left, func_addr, False); self._walk(expr.right, ...)
+        elif op == Op.HLIL_ASSIGN:
+            self._walk(expr.dest, func_addr, True);  self._walk(expr.src, ...)
+        # ... dispatch mirrors _compat.walk_expr exactly
+
+Op/_BINARY_OPS/_UNARY_SRC_OPS/_ARRAY_OPS/_safe_list all come from
+reaper.tools._compat. -->
 
 ---
 
@@ -274,4 +369,9 @@ text = "\n\n".join(parts)
 return text
 ```
 
-<!-- FILL: After implementing 3.1, paste verified for_function() here -->
+<!-- VERIFIED (3.1 harness/context.py) — every method routes through
+_finalize() which enforces config['limits']['max_context_tokens'] and logs a
+warning on truncation. for_subgraph adds the 3-step ladder: (1) drop claims
+below mid_confidence, (2) summarize HLIL to signature + first/last 10 lines,
+(3) drop least-connected functions. All Neo4j/ledger reads degrade gracefully
+(exception → section omitted, never crash). -->

@@ -195,53 +195,98 @@ Phase 8:                8.1 → 8.2 → 8.3
 
 ## Phase 5: Initial Sweep (Pass 1)
 
-- [ ] **5.1** Variable Rename Agent (Leaf Level)
-  <!-- NOTES: RenameVariableAgent, minimal thinking, returns Submission with one Rename -->
+- [x] **5.1** Variable Rename Agent (Leaf Level)
+  <!-- NOTES: RenameVariableAgent(llm_client, context_asm, tracer, config) —
+       for_variable context (>>> target <<< highlight), Submission schema,
+       minimal thinking budget, tracer event. 3 tests green. -->
 
-- [ ] **5.2** Bottom-Up Traversal Dispatcher (Pass 1)
-  <!-- NOTES: Pass1Dispatcher, vars→args→summary per function, SCC second pass,
-       function_summary.txt prompt, NO critic in Pass 1 -->
+- [x] **5.2** Bottom-Up Traversal Dispatcher (Pass 1)
+  <!-- NOTES: Pass1Dispatcher(llm_client, neo4j_driver, context_asm,
+       bndb_writer, ledger, tracer, config) — walks traversal_order ascending,
+       group by level, parallel per-level (Semaphore); within a function
+       SEQUENTIAL vars→args→summary; renames applied to Neo4j + BNDB
+       immediately (no critic); SCC second pass re-runs args+summary only;
+       bndb_writer.save(). Node queries guarded against .format() brace
+       collision. 2 integration tests green (main sweep + SCC second pass). -->
 
 ## Phase 6: Deep Review (Pass 2) + Critic Loop
 
-- [ ] **6.1** Critic Agent
-  <!-- NOTES: CriticEvaluator shared class, _rejection_counts per (func_addr, agent_role),
-       force-accept at 'speculation' after max rejections, delete rejected claim -->
+- [x] **6.1** Critic Agent
+  <!-- NOTES: CriticEvaluator(llm_client, context_asm, ledger, tracer, config)
+       — shared harness class; _rejection_counts[(func_addr, agent_role)];
+       accepted→set_truth_level; rejected+below-max→delete_claim + feedback;
+       rejected+at-max→force-accept 'speculation' + reset. One evaluator per
+       dispatcher (never shared). 3 tests green. -->
 
-- [ ] **6.2** Review Agent
-  <!-- NOTES: ReviewOutput = renames + claims + TaskSpec list -->
+- [x] **6.2** Review Agent
+  <!-- NOTES: ReviewAgent — one structured ReviewOutput call (renames + claims
+       with HLIL evidence + rich TaskSpecs) on for_function(include_callees +
+       include_claims) context. 2 tests green. -->
 
-- [ ] **6.3** Pass 2 Dispatcher
-  <!-- NOTES: Pass2Dispatcher, review → critic → merge flow, shadow checkout for merge -->
+- [x] **6.3** Pass 2 Dispatcher
+  <!-- NOTES: Pass2Dispatcher — review→critic→task-critic→merge per function,
+       level-parallel. Claims inserted to ledger (truth_level NULL) then
+       critic; rejected claims deleted; tasks critically gated before todo;
+       renames merged ONLY when the review passed (no claims OR an accepted
+       claim), claims EXCLUDED from merge submission to avoid duplicate rows.
+       3 tests green (accepted / all-rejected-drops-renames / no-claims). -->
 
 ## Phase 7: Investigation & Resynthesis
 
-- [ ] **7.1** Scheduler Agent
-  <!-- NOTES: Scheduler, review_pending_tasks + run_once, stale task check -->
+- [x] **7.1** Scheduler Agent
+  <!-- NOTES: Scheduler(llm_client, todo, context_asm, tracer, config) —
+       review_pending_tasks (20-task batches; merge/decompose SchedulerPlan
+       schema), run_once (stale reset → assign ready → return WITHOUT
+       executing), stale in_progress reset. Added TodoLedger.get_pending_tasks
+       + reset_stale_in_progress + requeue_task. 3 scheduler tests + 2 todo
+       tests green. -->
 
-- [ ] **7.2** Investigation Agent
-  <!-- NOTES: InvestigationAgent, InvestigationResult = answer + claims + subtasks -->
+- [x] **7.2** Investigation Agent
+  <!-- NOTES: InvestigationAgent — executes one task → InvestigationResult
+       (answer + claims + rich TaskSpec subtasks). 2 tests green. -->
 
-- [ ] **7.3** Investigation Loop Runner
-  <!-- NOTES: InvestigationLoop, creates internal CriticEvaluator, _handle_result critic flow,
-       stuck detection when no tasks dispatched and none in progress -->
+- [x] **7.3** Investigation Loop Runner
+  <!-- NOTES: InvestigationLoop — own CriticEvaluator; claim→ledger→critic;
+       subtasks created independently + parent requeued (deadlock-free
+       deviation from the literal mutual-dependency spec — documented inline);
+       complete only when no subtasks and (claims accepted OR no claims);
+       stuck detection returns False. 3 tests green (drain / subtask-requeue /
+       stuck). -->
 
-- [ ] **7.4** Resynthesis Agent
-  <!-- NOTES: ResynthesisAgent, ResynthesisResult = contradictions + merged + new tasks -->
+- [x] **7.4** Resynthesis Agent
+  <!-- NOTES: ResynthesisAgent — single LLM call on for_subgraph context →
+       ResynthesisResult (contradictions + merged_claims + new_tasks).
+       compute_resynthesis_groups already implemented in graph_analysis (2.5).
+       2 tests green. -->
 
-- [ ] **7.5** Resynthesis Loop + Completion Check
-  <!-- NOTES: ResynthesisLoop, max_resynthesis_iterations cap, is_re_complete() -->
+- [x] **7.5** Resynthesis Loop + Completion Check
+  <!-- NOTES: ResynthesisLoop — capped at max_resynthesis_iterations; per group
+       create tasks / merge claims; break on stable iteration; then
+       register_functions_from_graph + is_re_complete (claims on ALL functions
+       AND todo empty). 3 tests green + 1 is_re_complete gate test. -->
 
 ## Phase 8: Test Target + Integration
 
-- [ ] **8.1** Build Stripped cJSON Test Binary
-  <!-- NOTES: build.sh + extract_ground_truth.py, cJSON v1.7.18, dynamic linking -->
+- [x] **8.1** Build Stripped cJSON Test Binary
+  <!-- NOTES: eval/cjson/build.sh (cJSON v1.7.18, dynamic linking) + 
+       extract_ground_truth.py (Binja headless; degrades to EMPTY ground_truth
+       without Binja). VERIFIED locally: build succeeds, cjson_test has 0 text
+       symbols (nm-clean), binary parses JSON at runtime; ground_truth.json
+       stub committed; real extraction needs Binja on PYTHONPATH. -->
 
-- [ ] **8.2** End-to-End Pipeline Runner
-  <!-- NOTES: reaper/run.py, verify all imports resolve, verify all constructors match -->
+- [x] **8.2** End-to-End Pipeline Runner
+  <!-- NOTES: run.py already written against the full architecture. Verified
+       ALL previously-missing imports (pass1/pass2 dispatchers, scheduler,
+       investigation_loop, completion, investigation/resynthesis agents) now
+       resolve; `import reaper.run` is clean. -->
 
-- [ ] **8.3** Ground Truth Evaluator
-  <!-- NOTES: 6 metrics, LLM judge for semantic match, ~70 LLM calls at minimal thinking -->
+- [x] **8.3** Ground Truth Evaluator
+  <!-- NOTES: eval/evaluate.py — 6 metrics (function exact/semantic name,
+       variable exact/semantic, claim coverage, type-recovery by offset+size,
+       false-confidence rate) + optional LLMJudge ({"equivalent": bool}
+       structured schema, minimal thinking). Non-function keys (e.g. 'structs')
+       excluded from function metrics. 6 tests green + CLI smoke on the built
+       binary. -->
 
 ---
 
@@ -297,3 +342,28 @@ Phase 8:                8.1 → 8.2 → 8.3
   "f.traversal_order". Resolution: implementation now writes pinned order via
   the SAME $order parameter (uniform writes; behavior identical). Per the
   "fix the implementation, don't weaken the test" rule.
+- [5.2] Cypher map literal `{address: $fa}` collided with Python
+  str.format() in the Variable/Argument queries (KeyError 'address').
+  Resolution: string concatenation for the node label instead of .format() —
+  NEVER .format() a query containing `{...}` map syntax.
+- [7.1] TodoLedger lacked a "list pending" query and a stale-task reset that
+  the Scheduler (design § 7.1) needs. Resolution: added
+  get_pending_tasks() / reset_stale_in_progress(timeout) — documented,
+  tested; design intent preserved.
+- [7.3] The literal "subtask depends on current task AND current depends on
+  its subtasks" is a MUTUAL DEADLOCK for get_ready_tasks (both blocked forever).
+  Resolution: subtasks are created independent, and the parent is requeued
+  to pending so it is retried — no cycle, still terminates (documented in the
+  module docstring; intentionally deviating from the literal spec).
+- [8.1] extract_ground_truth.py needs Binja headless; without it the committed
+  ground_truth.json is the empty `{}` stub (all 8.3 metrics report 0 by
+  design). Real extraction requires PYTHONPATH=$HOME/binja-headless/python and
+  re-running the extractor — build.sh + binary are committed/ignorable.
+- [8.3] The evaluator's ground-truth/reaper-output dicts may carry a non-
+  function `"structs"` key (metric 5). Resolution: every function metric loop
+  guards on `"function_name" in gt_fn` so struct entries are never miscounted
+  as functions (caught by test_claim_coverage_and_type_recovery...).
+- [8.3] eval/evaluate.py `compute_metrics` originally lost its `return m`
+  during a multi-part file edit (editor replaced rather than anchored);
+  caught by tests. Lesson: when splitting large files, never use a 2-word
+  anchor like `return m` for an append.

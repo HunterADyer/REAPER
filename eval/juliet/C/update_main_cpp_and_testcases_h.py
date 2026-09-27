@@ -60,7 +60,7 @@ def generate_calls_to_fxs(testcase_files):
 		filename = os.path.basename(fullfilepath)
 
 		# do different things if its a c or cpp file
-		match = re.search("^(?P<root>CWE(\d+).*__.*_\d+)((?P<letter>[a-z]*)|_(bad|good\d+))(\.c|\.cpp)$", filename)
+		match = re.search(r"^(?P<root>CWE(\d+).*__.*_\d+)((?P<letter>[a-z]*)|_(bad|good\d+))(\.c|\.cpp)$", filename)
 
 		if filename.endswith(".cpp"):
 			root = match.group("root") # we don't use the letter in the namespace 
@@ -113,7 +113,7 @@ def generate_calls_to_linux_fxs(testcase_files):
 		if ('w32' not in filename) and ('wchar_t' not in filename):
 			
 			# do different things if its a c or cpp file
-			match = re.search("^(?P<root>CWE(\d+).*__.*_\d+)((?P<letter>[a-z]*)|_(bad|good\d+))(\.c|\.cpp)$", filename)
+			match = re.search(r"^(?P<root>CWE(\d+).*__.*_\d+)((?P<letter>[a-z]*)|_(bad|good\d+))(\.c|\.cpp)$", filename)
 
 			if filename.endswith(".cpp"):
 				root = match.group("root") # we don't use the letter in the namespace 

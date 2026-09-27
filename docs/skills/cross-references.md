@@ -55,32 +55,32 @@ Every constructor MUST match this table exactly (arg order matters).
 
 Verify each import resolves after implementing its deliverable.
 
-<!-- FILL: Check off as you implement each deliverable -->
+<!-- ALL verified AFTER implementing every deliverable: 138 tests green. -->
 
-- [ ] `reaper.harness.llm_client` → ReaperLLMClient (1.3)
-- [ ] `reaper.harness.tracer` → Tracer (1.4)
-- [ ] `reaper.harness.ledger` → Ledger (1.5)
-- [ ] `reaper.harness.todo` → TodoLedger (1.6)
-- [ ] `reaper.harness.context` → ContextAssembler (3.1)
-- [ ] `reaper.harness.shadow` → ShadowCopyManager (3.2)
-- [ ] `reaper.harness.submission` → get_schema, parse_response, all models (3.3)
-- [ ] `reaper.harness.merge_agent` → MergeAgent (3.5)
-- [ ] `reaper.harness.pass1_dispatcher` → Pass1Dispatcher (5.2)
-- [ ] `reaper.harness.pass2_dispatcher` → Pass2Dispatcher (6.3)
-- [ ] `reaper.harness.scheduler` → Scheduler (7.1)
-- [ ] `reaper.harness.investigation_loop` → InvestigationLoop (7.3)
-- [ ] `reaper.harness.completion` → ResynthesisLoop, is_re_complete (7.5)
-- [ ] `reaper.tools.hlil_extract` → HLILExtractor (2.1)
-- [ ] `reaper.tools.graph_nodes` → build_nodes (2.2)
-- [ ] `reaper.tools.graph_edges` → build_edges (2.3)
-- [ ] `reaper.tools.pin_symbols` → pin_symbols (2.4)
-- [ ] `reaper.tools.graph_analysis` → validate_and_order, compute_resynthesis_groups (2.5)
-- [ ] `reaper.tools.bndb_writer` → BNDBWriter (3.4)
-- [ ] `reaper.tools.struct_detector` → StructAccessDetector (4.1)
-- [ ] `reaper.tools.graph_rebuild` → GraphRebuilder (4.3)
-- [ ] `reaper.agents.type_recovery` → TypeRecoveryAgent (4.2)
-- [ ] `reaper.agents.investigation_agent` → InvestigationAgent (7.2)
-- [ ] `reaper.agents.resynthesis_agent` → ResynthesisAgent (7.4)
+- [x] `reaper.harness.llm_client` → ReaperLLMClient (1.3)
+- [x] `reaper.harness.tracer` → Tracer (1.4)
+- [x] `reaper.harness.ledger` → Ledger (1.5)
+- [x] `reaper.harness.todo` → TodoLedger (1.6)
+- [x] `reaper.harness.context` → ContextAssembler (3.1)
+- [x] `reaper.harness.shadow` → ShadowCopyManager (3.2)
+- [x] `reaper.harness.submission` → get_schema, parse_response, all models (3.3)
+- [x] `reaper.harness.merge_agent` → MergeAgent (3.5)
+- [x] `reaper.harness.pass1_dispatcher` → Pass1Dispatcher (5.2)
+- [x] `reaper.harness.pass2_dispatcher` → Pass2Dispatcher (6.3)
+- [x] `reaper.harness.scheduler` → Scheduler (7.1)
+- [x] `reaper.harness.investigation_loop` → InvestigationLoop (7.3)
+- [x] `reaper.harness.completion` → ResynthesisLoop, is_re_complete (7.5)
+- [x] `reaper.tools.hlil_extract` → HLILExtractor (2.1)
+- [x] `reaper.tools.graph_nodes` → build_nodes (2.2)
+- [x] `reaper.tools.graph_edges` → build_edges (2.3)
+- [x] `reaper.tools.pin_symbols` → pin_symbols (2.4)
+- [x] `reaper.tools.graph_analysis` → validate_and_order, compute_resynthesis_groups (2.5)
+- [x] `reaper.tools.bndb_writer` → BNDBWriter (3.4)
+- [x] `reaper.tools.struct_detector` → StructAccessDetector (4.1)
+- [x] `reaper.tools.graph_rebuild` → GraphRebuilder (4.3)
+- [x] `reaper.agents.type_recovery` → TypeRecoveryAgent (4.2)
+- [x] `reaper.agents.investigation_agent` → InvestigationAgent (7.2)
+- [x] `reaper.agents.resynthesis_agent` → ResynthesisAgent (7.4)
 - [x] `reaper.infra.init_db` → init_schema (1.2)
 
 ---
@@ -99,20 +99,20 @@ Verify each import resolves after implementing its deliverable.
 
 ## Pydantic Models (all in harness/submission.py)
 
-<!-- FILL: Check off after implementing 3.3 — verify all importable -->
+<!-- ALL implemented in 3.3 — verified importable + round-tripped. -->
 
-- [ ] TRUTH_LEVELS (Literal type)
-- [ ] Rename, EvidenceLink, Claim, Submission
-- [ ] CriticVerdict, CriticOutcome
-- [ ] TaskContextSpec, TaskSpec
-- [ ] ReviewOutput, InvestigationResult, ResynthesisResult
-- [ ] Contradiction, MergedClaim
-- [ ] StructField, StructDefinition
-- [ ] FunctionSummary
-- [ ] LLMTransientError (in harness/llm_client.py, NOT submission.py)
+- [x] TRUTH_LEVELS (Literal type)
+- [x] Rename, EvidenceLink, Claim, Submission
+- [x] CriticVerdict, CriticOutcome
+- [x] TaskContextSpec, TaskSpec
+- [x] ReviewOutput, InvestigationResult, ResynthesisResult
+- [x] Contradiction, MergedClaim
+- [x] StructField, StructDefinition
+- [x] FunctionSummary
+- [x] LLMTransientError (in harness/llm_client.py, NOT submission.py)
 
 Also in struct_detector.py (NOT submission.py):
-- [ ] StructCandidate, FieldAccess
+- [x] StructCandidate, FieldAccess
 
 ---
 
@@ -132,13 +132,13 @@ All verified via tomllib against `configs/default.toml` in Deliverable 1.1.
 
 ## Prompt Files
 
-<!-- FILL: Check off as you write each prompt -->
+<!-- ALL written and tested. -->
 
-- [ ] `agents/prompts/rename_variable.txt` (5.1)
-- [ ] `agents/prompts/function_summary.txt` (5.2)
-- [ ] `agents/prompts/type_recovery.txt` (4.2)
-- [ ] `agents/prompts/critic_agent.txt` (6.1)
-- [ ] `agents/prompts/review_agent.txt` (6.2)
-- [ ] `agents/prompts/merge_agent.txt` (3.5)
-- [ ] `agents/prompts/investigation_agent.txt` (7.2)
-- [ ] `agents/prompts/resynthesis_agent.txt` (7.4)
+- [x] `agents/prompts/rename_variable.txt` (5.1)
+- [x] `agents/prompts/function_summary.txt` (5.2)
+- [x] `agents/prompts/type_recovery.txt` (4.2)
+- [x] `agents/prompts/critic_agent.txt` (6.1)
+- [x] `agents/prompts/review_agent.txt` (6.2)
+- [x] `agents/prompts/merge_agent.txt` (3.5)
+- [x] `agents/prompts/investigation_agent.txt` (7.2)
+- [x] `agents/prompts/resynthesis_agent.txt` (7.4)

@@ -30,6 +30,7 @@ packages = [
     "reaper.agents",
     "reaper.agents.prompts",
     "reaper.infra",
+    "reaper.eval",
 ]
 
 # The repository root IS the `reaper` package (the design doc's `reaper/...`
