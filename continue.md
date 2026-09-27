@@ -587,6 +587,12 @@ PYTHONPATH=$HOME/binja/python python3 -m reaper.run --binary eval/cjson/cjson_te
 # evaluate (6 metrics; CLI defaults are stale so pass base-url/model explicitly)
 python3 eval/evaluate.py --ground-truth eval/cjson/ground_truth.json --reaper-output reaper/data/cjson_001_reaper_output.json --llm --base-url http://localhost:8035/v1 --model deepseek
 
+# pass0 (type-recovery) mini-corpus — ground truth WITHOUT Binja (pyelftools/DWARF)
+(cd eval/pass0 && bash build.sh && python3 extract_ground_truth.py)
+python3 -m pytest tests/test_pass0_eval.py -q   # offline corpus validation
+# score metric 5 after a live pass0 run:
+python3 eval/evaluate.py --ground-truth eval/pass0/ground_truth.json --reaper-output reaper/data/pass0_001_reaper_output.json
+
 # infra
 (cd infra; docker compose up -d)      # Neo4j 5.26 on 7687/7474, auth neo4j/reaper
 # reset the graph for a fresh run (manual):

@@ -1,0 +1,363 @@
+{
+  "0x10d0": {
+    "function_name": "deregister_tm_clones",
+    "parameters": [],
+    "local_variables": []
+  },
+  "0x1100": {
+    "function_name": "register_tm_clones",
+    "parameters": [],
+    "local_variables": []
+  },
+  "0x1180": {
+    "function_name": "frame_dummy",
+    "parameters": [],
+    "local_variables": []
+  },
+  "0x1189": {
+    "function_name": "on_overflow",
+    "parameters": [
+      {
+        "name": "c",
+        "type": "struct cfg *"
+      },
+      {
+        "name": "ev",
+        "type": "int"
+      }
+    ],
+    "local_variables": []
+  },
+  "0x1195": {
+    "function_name": "cfg_version",
+    "parameters": [
+      {
+        "name": "c",
+        "type": "struct cfg *"
+      }
+    ],
+    "local_variables": []
+  },
+  "0x11a0": {
+    "function_name": "cfg_dump",
+    "parameters": [
+      {
+        "name": "c",
+        "type": "struct cfg *"
+      }
+    ],
+    "local_variables": [
+      {
+        "name": "i",
+        "type": "unsigned int"
+      },
+      {
+        "name": "n",
+        "type": "unsigned int"
+      }
+    ]
+  },
+  "0x11f1": {
+    "function_name": "cfg_emit",
+    "parameters": [
+      {
+        "name": "c",
+        "type": "struct cfg *"
+      },
+      {
+        "name": "ev",
+        "type": "int"
+      }
+    ],
+    "local_variables": []
+  },
+  "0x120e": {
+    "function_name": "box_area",
+    "parameters": [
+      {
+        "name": "b",
+        "type": "struct box *"
+      }
+    ],
+    "local_variables": [
+      {
+        "name": "w",
+        "type": "double"
+      },
+      {
+        "name": "h",
+        "type": "double"
+      }
+    ]
+  },
+  "0x1252": {
+    "function_name": "box_hit",
+    "parameters": [
+      {
+        "name": "b",
+        "type": "struct box *"
+      },
+      {
+        "name": "px",
+        "type": "double"
+      },
+      {
+        "name": "py",
+        "type": "double"
+      }
+    ],
+    "local_variables": []
+  },
+  "0x1289": {
+    "function_name": "pt_dist2",
+    "parameters": [
+      {
+        "name": "p",
+        "type": "struct point *"
+      }
+    ],
+    "local_variables": []
+  },
+  "0x12a3": {
+    "function_name": "node_kind_name",
+    "parameters": [
+      {
+        "name": "n",
+        "type": "struct gnode *"
+      }
+    ],
+    "local_variables": []
+  },
+  "0x12e3": {
+    "function_name": "node_rank",
+    "parameters": [
+      {
+        "name": "n",
+        "type": "struct gnode *"
+      }
+    ],
+    "local_variables": [
+      {
+        "name": "r",
+        "type": "long unsigned int"
+      }
+    ]
+  },
+  "0x1327": {
+    "function_name": "symtab_load",
+    "parameters": [
+      {
+        "name": "t",
+        "type": "struct symtab *"
+      }
+    ],
+    "local_variables": []
+  },
+  "0x1337": {
+    "function_name": "symtab_generation",
+    "parameters": [
+      {
+        "name": "t",
+        "type": "struct symtab *"
+      }
+    ],
+    "local_variables": [
+      {
+        "name": "g",
+        "type": "long unsigned int"
+      },
+      {
+        "name": "n",
+        "type": "unsigned int"
+      },
+      {
+        "name": "i",
+        "type": "unsigned int"
+      }
+    ]
+  },
+  "0x1378": {
+    "function_name": "main",
+    "parameters": [],
+    "local_variables": [
+      {
+        "name": "c",
+        "type": "struct cfg"
+      },
+      {
+        "name": "b",
+        "type": "struct box"
+      },
+      {
+        "name": "a",
+        "type": "struct gnode"
+      },
+      {
+        "name": "e1",
+        "type": "struct gnode"
+      },
+      {
+        "name": "n",
+        "type": "struct gnode[]"
+      },
+      {
+        "name": "slots",
+        "type": "struct gnode *[]"
+      },
+      {
+        "name": "t",
+        "type": "struct symtab"
+      }
+    ]
+  },
+  "structs": {
+    "box": [
+      {
+        "offset": 0,
+        "size": 16,
+        "name": "min",
+        "type_str": "struct point"
+      },
+      {
+        "offset": 16,
+        "size": 16,
+        "name": "max",
+        "type_str": "struct point"
+      },
+      {
+        "offset": 32,
+        "size": 4,
+        "name": "color",
+        "type_str": "unsigned int"
+      },
+      {
+        "offset": 36,
+        "size": 4,
+        "name": "layer",
+        "type_str": "int"
+      }
+    ],
+    "cfg": [
+      {
+        "offset": 0,
+        "size": 4,
+        "name": "version",
+        "type_str": "int"
+      },
+      {
+        "offset": 4,
+        "size": 2,
+        "name": "mode",
+        "type_str": "short unsigned int"
+      },
+      {
+        "offset": 6,
+        "size": 1,
+        "name": "verbosity",
+        "type_str": "unsigned char"
+      },
+      {
+        "offset": 7,
+        "size": 1,
+        "name": "pad",
+        "type_str": "unsigned char"
+      },
+      {
+        "offset": 8,
+        "size": 64,
+        "name": "logfile",
+        "type_str": "char[]"
+      },
+      {
+        "offset": 72,
+        "size": 8,
+        "name": "user",
+        "type_str": "<unknown> *"
+      },
+      {
+        "offset": 80,
+        "size": 8,
+        "name": "on_event",
+        "type_str": "function *"
+      },
+      {
+        "offset": 88,
+        "size": 8,
+        "name": "threshold",
+        "type_str": "double"
+      }
+    ],
+    "gnode": [
+      {
+        "offset": 0,
+        "size": 8,
+        "name": "next",
+        "type_str": "struct gnode *"
+      },
+      {
+        "offset": 8,
+        "size": 4,
+        "name": "id",
+        "type_str": "unsigned int"
+      },
+      {
+        "offset": 12,
+        "size": 4,
+        "name": "kind",
+        "type_str": "enum nkind"
+      },
+      {
+        "offset": 16,
+        "size": 8,
+        "name": "label",
+        "type_str": "char *"
+      },
+      {
+        "offset": 24,
+        "size": 4,
+        "name": "weight",
+        "type_str": "int"
+      }
+    ],
+    "point": [
+      {
+        "offset": 0,
+        "size": 8,
+        "name": "x",
+        "type_str": "double"
+      },
+      {
+        "offset": 8,
+        "size": 8,
+        "name": "y",
+        "type_str": "double"
+      }
+    ],
+    "symtab": [
+      {
+        "offset": 0,
+        "size": 8,
+        "name": "slots",
+        "type_str": "struct gnode * *"
+      },
+      {
+        "offset": 8,
+        "size": 4,
+        "name": "slot_count",
+        "type_str": "unsigned int"
+      },
+      {
+        "offset": 12,
+        "size": 4,
+        "name": "used",
+        "type_str": "unsigned int"
+      },
+      {
+        "offset": 16,
+        "size": 8,
+        "name": "generation",
+        "type_str": "long unsigned int"
+      }
+    ]
+  }
+}
