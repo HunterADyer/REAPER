@@ -183,7 +183,13 @@ Phase 8:                8.1 → 8.2 → 8.3
        returns None on empty fields (no struct). Records one claim per involved
        function at truth_level='inferred' with evidence = access instruction
        addresses (v1; critic may revisit in Pass 2). Uses context_asm.ledger.
-       3 tests green (schema request, inferred claims, empty->None). -->
+       3 tests green (schema request, inferred claims, empty->None).
+       AUDIT 2026-09-27: run(candidate, follow_up=False) selects
+       pass0_type_recovery ("high" = load-bearing; feeds metric 5 + field
+       renames); follow_up=True selects recovery_followup ("max" = xhigh) for
+       refinement rounds. run.py Phase 4 drives a fixed-point loop capped by
+       max_type_recovery_rounds; each candidate processed at most once.
+       Regression test asserts the high/max routing incl. defaults. -->
 
 - [x] **4.3** Graph Rebuild on Type Recovery
   <!-- NOTES: GraphRebuilder(extractor, bndb_writer, neo4j_driver) — builds a C

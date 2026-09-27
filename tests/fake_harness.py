@@ -120,6 +120,7 @@ class StubLLM:
             "op": "send",
             "session_id": session_id,
             "message": message,
+            "thinking_level": thinking_level,
             "structured_output": structured_output is not None,
         })
         sess = self._sessions.get(session_id)

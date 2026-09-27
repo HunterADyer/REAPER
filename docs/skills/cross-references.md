@@ -122,7 +122,7 @@ Also in struct_detector.py (NOT submission.py):
 
 - [x] `config['neo4j']['uri']`, `['user']`, `['password']`
 - [x] `config['vllm']['base_url']`, `['model']`
-- [x] `config['thinking_levels']` — keys: pass0_type_recovery, pass1_rename, pass2_review, critic, investigation, merge, resynthesis, scheduler
+- [x] `config['thinking_levels']` — keys: pass0_type_recovery, recovery_followup, pass1_rename, pass2_review, critic, investigation, merge, resynthesis, scheduler
 - [x] `config['limits']` — keys: max_critic_rejections, max_resynthesis_iterations, shadow_copy_hops, task_timeout_seconds, max_concurrent_agents, max_context_tokens
 - [x] `config['paths']['data_dir']`, `['traces_dir']`
 

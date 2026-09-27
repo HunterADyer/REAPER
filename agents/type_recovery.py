@@ -8,6 +8,14 @@ Output: ``StructDefinition`` (from reaper.harness.submission, shared protocol).
 ``run()`` returns ``None`` when the LLM concludes no struct exists (empty
 ``fields``), so the caller can skip the rebuild for that candidate.
 
+Thinking budget by ROUND (audit 2026-09-27): the initial pass-0 recovery runs
+at ``pass0_type_recovery`` ("high" — struct layouts are load-bearing: they feed
+metric 5 and every later field rename). Any FOLLOW-UP recovery round (a struct
+applied in an earlier round exposes NEW struct-access patterns) runs at
+``recovery_followup`` ("max" = xhigh) via ``run(..., follow_up=True)`` — the
+deep refinement work gets the maximum budget. See run.py Phase 4 for the
+fixed-point driver that selects the round.
+
 Claim discipline: one claim per involved function, truth_level="inferred" for
 v1 (the design says the critic may revisit it later; for the first
 implementation we set it directly).
@@ -40,8 +48,13 @@ class TypeRecoveryAgent:
     def _ledger(self):
         return getattr(self.context_asm, "ledger", None)
 
-    async def run(self, candidate) -> StructDefinition | None:
+    async def run(self, candidate, *, follow_up: bool = False) -> StructDefinition | None:
         """Assemble context, call the LLM, return a parsed StructDefinition.
+
+        ``follow_up=False`` (pass 0 / first round) uses the
+        ``pass0_type_recovery`` level (default "high"). ``follow_up=True``
+        (a refinement round after a prior struct application exposed new
+        access patterns) uses ``recovery_followup`` (default "max" = xhigh).
 
         Returns ``None`` (no struct inferred) only when the model emits an
         empty fields list. A claim is recorded per involved function with
@@ -51,12 +64,15 @@ class TypeRecoveryAgent:
         try:
             await self.llm.create_session(session_id, self.prompt)
             context = await self.context_asm.for_struct_candidate(candidate)
+            levels = self.config.get("thinking_levels", {})
+            thinking_level = (
+                levels.get("recovery_followup", "max")
+                if follow_up else levels.get("pass0_type_recovery", "high")
+            )
             response = await self.llm.send(
                 session_id,
                 context,
-                thinking_level=self.config.get("thinking_levels", {}).get(
-                    "pass0_type_recovery", "high"
-                ),
+                thinking_level=thinking_level,
                 structured_output=get_schema(StructDefinition),
             )
             result = parse_response(StructDefinition, response)

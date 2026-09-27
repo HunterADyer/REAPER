@@ -79,8 +79,11 @@ model = "deepseek"
 # Structured JSON responses typically consume 200-2000 tokens, so
 # these values leave headroom beyond the thinking portion.
 # minimal=1024, low=4096, medium=12288, high=20480, max=40960.
-# AUDIT 2026-09-27 — policy: QUALITY-GATED -> high/xhigh; NOT gated -> minimal.
-pass0_type_recovery = "minimal"   # ungated (struct claims recorded at "inferred")
+# AUDIT 2026-09-27 — policy: QUALITY-GATED / LOAD-BEARING -> max/high; else minimal.
+pass0_type_recovery = "high"       # load-bearing: struct layouts feed metric 5 +
+                                  #   every later field rename — high per 2026-09-27
+recovery_followup = "max"          # follow-up recovery rounds (new access patterns
+                                  #   exposed after a struct application) — xhigh
 pass1_rename = "minimal"          # ungated (merge is conflict-check only)
 pass2_review = "max"              # GATED — main claim source + task critic
 critic = "high"                   # GATED — the gate itself (sets truth_level)
@@ -94,6 +97,7 @@ scheduler = "minimal"             # ungated task planning
 [limits]
 max_critic_rejections = 3          # after this, accept at 'speculation' and move on
 max_resynthesis_iterations = 5     # prevent investigation<->resynthesis infinite loop
+max_type_recovery_rounds = 5       # cap pass-0 -> follow-up (recovery_followup) fixed-point loop
 shadow_copy_hops = 2               # N-hop neighborhood for shadow checkouts
 task_timeout_seconds = 600         # stale task timeout
 max_concurrent_agents = 8          # parallel vLLM sessions
@@ -1069,9 +1073,10 @@ class TypeRecoveryAgent:
 **Logic:**
 1. For each StructCandidate from 4.1:
    - `context = await context_asm.for_struct_candidate(candidate)`
-   - `response = await llm.send(session, context, thinking_level="minimal", structured_output=get_schema(StructDefinition))`
+   - `response = await llm.send(session, context, thinking_level=levels.get("pass0_type_recovery", "high"), structured_output=get_schema(StructDefinition))`
    - Parse into StructDefinition
    - Create a claim in the ledger for each struct (truth_level=NULL, to be evaluated later when critic is available; for first implementation, set to 'inferred' directly)
+2. Fixed-point follow-up (audit 2026-09-27): the pipeline driver (run.py Phase 4) runs the initial pass-0 recovery at `pass0_type_recovery` ("high"). Applying a struct rebuilds the graph and can EXPOSE new struct-access patterns, so the driver loops. Any follow-up round calls `type_agent.run(candidate, follow_up=True)`, which requests `thinking_levels["recovery_followup"]` (default/configured "max" = xhigh) — the deep refinement work is intentionally the most expensive budget. Each candidate is processed at most once and `max_type_recovery_rounds` caps the loop.
 
 **Test:** Run on cJSON struct candidates. Output includes a struct with >=3 fields at correct offsets.
 
@@ -1665,12 +1670,29 @@ async def main(binary_path: str, config_path: str, run_id: str):
 
     # Phase 4: Type recovery
     type_agent = TypeRecoveryAgent(llm, context_asm, config)
-    candidates = StructAccessDetector(extractor).find_struct_accesses()
+    detector = StructAccessDetector(extractor)
     rebuilder = GraphRebuilder(extractor, bndb_writer, neo4j_driver)
-    for candidate in candidates:
-        struct_def = await type_agent.run(candidate)
-        if struct_def:
-            await rebuilder.apply_struct(struct_def)
+    # pass-0 round runs at pass0_type_recovery ("high"); a follow-up round
+    # (new access patterns exposed after applying a struct) runs at
+    # recovery_followup ("max"). Each candidate processed at most once;
+    # max_type_recovery_rounds is a hard cap.
+    max_rounds = int(config.get("limits", {}).get("max_type_recovery_rounds", 5))
+    processed, round_no = set(), 0
+    while round_no < max_rounds:
+        pending = [c for c in detector.find_struct_accesses()
+                   if c.candidate_id not in processed]
+        if not pending:
+            break
+        structurally_changed = False
+        for candidate in pending:
+            processed.add(candidate.candidate_id)
+            struct_def = await type_agent.run(candidate, follow_up=(round_no > 0))
+            if struct_def:
+                await rebuilder.apply_struct(struct_def)
+                structurally_changed = True
+        if not structurally_changed:
+            break
+        round_no += 1
     # Re-register after graph changes from type recovery
     await ledger.register_functions_from_graph()
 

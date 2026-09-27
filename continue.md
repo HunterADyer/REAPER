@@ -355,18 +355,21 @@ CALL, RETURN, REFS_STRING, FIELD_OF, DEFERRED_BACK. Only `_ALLOWED_FIELDS` (shad
 coverage stats give partial credit; pinned functions excluded throughout.
 
 **Config keys (configs/default.toml):** `[neo4j] uri/user/password` · `[vllm] base_url/model` ·
-`[thinking_levels]` (pass0_type_recovery, pass1_rename, pass2_review, critic, investigation, merge,
+`[thinking_levels]` (pass0_type_recovery, recovery_followup, pass1_rename, pass2_review, critic, investigation, merge,
 resynthesis, scheduler) · `[limits]` (max_critic_rejections, max_review_retries, max_resynthesis_iterations,
-max_investigation_iterations, shadow_copy_hops, task_timeout_seconds, max_concurrent_agents,
+max_investigation_iterations, max_type_recovery_rounds, shadow_copy_hops, task_timeout_seconds, max_concurrent_agents,
 max_context_tokens) · `[paths] data_dir, traces_dir`. NEVER add binaryninja to requirements.txt.
 
-**Thinking levels audited 2026-09-27** (policy: quality-gated / load-bearing → max, else minimal):
+**Thinking levels audited 2026-09-27** (policy: quality-gated / load-bearing → max/high, else minimal):
 `pass2_review = "max"` · `critic = "high"` · `investigation = "high"` (claim-producing / gate stages;
 investigation claims are critic-gated, task requeued on total rejection). `merge = "max"` and
 `resynthesis = "max"` per the 2026-09-27 decision: merge-resolution correctness is final for renames
 (no later gate) and resynthesis edits the ledger directly (merged/deleted claims) — both treated as
-load-bearing. Only genuinely ungated/procedural stages stay minimal: `pass0_type_recovery`,
-`pass1_rename`, `scheduler`.
+load-bearing. `pass0_type_recovery = "high"` and `recovery_followup = "max"` per the 2026-09-27
+decision: struct layouts feed metric-5 + every later field rename (load-bearing, high for the pass-0
+round), and ANY follow-up recovery round (new access patterns exposed after a struct application)
+gets the maximum budget (xhigh). Only genuinely ungated/procedural stages stay minimal: `pass1_rename`,
+`scheduler`. The Phase-4 fixed-point loop is capped by `max_type_recovery_rounds`.
 
 **Constructor signatures are THE contract** between run.py and every component — full table in
 `docs/skills/cross-references.md`; module-level async fns (not classes) for build_nodes/build_edges/

@@ -147,17 +147,53 @@ async def run_pipeline(binary_path: str, config_path: str, run_id: str = "defaul
             # Phase 4: Type recovery
             if 4 in phases:
                 type_agent = TypeRecoveryAgent(llm, context_asm, config)
-                candidates = StructAccessDetector(extractor).find_struct_accesses()
+                detector = StructAccessDetector(extractor)
                 rebuilder = GraphRebuilder(extractor, bndb_writer, neo4j_driver)
-                for candidate in candidates:
-                    struct_def = await type_agent.run(candidate)
-                    if struct_def:
-                        await rebuilder.apply_struct(struct_def)
+                # Fixed-point loop: the initial pass-0 recovery runs at
+                # pass0_type_recovery ("high"). Applying a struct can expose
+                # NEW struct-access patterns (graph rebuild -> fresh HLIL), so
+                # any FOLLOW-UP round runs at recovery_followup ("max" = xhigh)
+                # for the deep refinement work. Each candidate is processed at
+                # most once; max_type_recovery_rounds is a hard cap.
+                max_rounds = int((config.get("limits") or {}).get(
+                    "max_type_recovery_rounds", 5))
+                processed = set()
+                round_no = 0
+                while round_no < max_rounds:
+                    candidates = detector.find_struct_accesses()
+                    pending = [c for c in candidates
+                               if c.candidate_id not in processed]
+                    if not pending:
+                        break
+                    structurally_changed = False
+                    for candidate in pending:
+                        processed.add(candidate.candidate_id)
+                        try:
+                            struct_def = await type_agent.run(
+                                candidate, follow_up=(round_no > 0))
+                        except Exception:
+                            log.exception("run: type recovery failed for %s",
+                                         candidate.candidate_id)
+                            continue
+                        if not struct_def:
+                            continue
+                        try:
+                            await rebuilder.apply_struct(struct_def)
+                            structurally_changed = True
+                        except Exception:
+                            log.exception("run: struct rebuild failed for %s",
+                                          candidate.candidate_id)
                         # Persist for the 8.3 metric-5 export (design § 8.4).
                         try:
                             await ledger.record_struct(struct_def)
                         except Exception:
                             log.exception("run: record_struct failed")
+                    # Only continue to a follow-up (max) round if applying
+                    # structs changed the graph and may have exposed new
+                    # candidates; otherwise the recovery is stable.
+                    if not structurally_changed:
+                        break
+                    round_no += 1
                 # Re-register after graph changes from type recovery
                 await ledger.register_functions_from_graph()
 

@@ -122,3 +122,37 @@ async def test_run_without_ledger_still_returns_struct():
     agent = TypeRecoveryAgent(llm, FakeContext(ledger=None), {"thinking_levels": {}})
     result = await agent.run(_candidate())
     assert result is not None and result.struct_name == "cjson_node"
+
+
+def _sent_level(llm) -> str:
+    return next(c for c in reversed(llm.calls) if c["op"] == "send")["thinking_level"]
+
+
+@pytest.mark.asyncio
+async def test_run_follow_up_selects_max_budget_pass0_high():
+    """Regression guard (audit 2026-09-27): pass-0 recovery requests
+    ``pass0_type_recovery`` ("high"); any FOLLOW-UP recovery round requests
+    ``recovery_followup`` ("max" = xhigh). Both defaults and explicit config
+    must route to the correct thinking levels."""
+    llm0 = StubLLM(responses=[_STRUCT_JSON], structured_model_name="StructDefinition")
+    await TypeRecoveryAgent(llm0, FakeContext(ledger=None),
+                            {"thinking_levels": {"pass0_type_recovery": "high"}}
+                            ).run(_candidate())
+    assert _sent_level(llm0) == "high"
+
+    llm1 = StubLLM(responses=[_STRUCT_JSON], structured_model_name="StructDefinition")
+    await TypeRecoveryAgent(llm1, FakeContext(ledger=None),
+                            {"thinking_levels": {"recovery_followup": "max"}}
+                            ).run(_candidate(), follow_up=True)
+    assert _sent_level(llm1) == "max"
+
+    # defaults when the config omits the keys: pass 0 -> "high", follow-up -> "max"
+    llm2 = StubLLM(responses=[_STRUCT_JSON])
+    await TypeRecoveryAgent(llm2, FakeContext(ledger=None),
+                            {"thinking_levels": {}}).run(_candidate())
+    assert _sent_level(llm2) == "high"
+
+    llm3 = StubLLM(responses=[_STRUCT_JSON])
+    await TypeRecoveryAgent(llm3, FakeContext(ledger=None),
+                            {"thinking_levels": {}}).run(_candidate(), follow_up=True)
+    assert _sent_level(llm3) == "max"
