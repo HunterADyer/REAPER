@@ -49,7 +49,7 @@ def _merge_setup(master_nodes=None):
     ledger = StubLedger()
     todo = StubTodo()
     shadow = ShadowCopyManager(driver, ledger, {"limits": {"shadow_copy_hops": 1}})
-    config = {"thinking_levels": {"merge": "medium"}}
+    config = {"thinking_levels": {"merge": "max"}}
     agent = MergeAgent(StubLLM(), shadow, writer, ledger, todo, config)
     return agent, driver, ledger, todo, func, shadow
 

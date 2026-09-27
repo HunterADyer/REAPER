@@ -360,13 +360,13 @@ resynthesis, scheduler) · `[limits]` (max_critic_rejections, max_review_retries
 max_investigation_iterations, shadow_copy_hops, task_timeout_seconds, max_concurrent_agents,
 max_context_tokens) · `[paths] data_dir, traces_dir`. NEVER add binaryninja to requirements.txt.
 
-**Thinking levels audited 2026-09-27** (policy: quality-gated → xhigh, ungated → minimal):
-`pass2_review = "max"` · `critic = "high"` · `investigation = "high"` (the claim-producing / gate
-stages; investigation claims are critic-gated and the task is requeued with feedback on total
-rejection). Every OTHER stage — `pass0_type_recovery`, `pass1_rename`, `merge`, `resynthesis`,
-`scheduler` — is **minimal** (no downstream truth gate; protects the shared serialized :8035 budget).
-Borderline: `resynthesis` edits the ledger directly (merged/deleted claims) without any gate — bump
-to `"high"` if you consider that load-bearing.
+**Thinking levels audited 2026-09-27** (policy: quality-gated / load-bearing → max, else minimal):
+`pass2_review = "max"` · `critic = "high"` · `investigation = "high"` (claim-producing / gate stages;
+investigation claims are critic-gated, task requeued on total rejection). `merge = "max"` and
+`resynthesis = "max"` per the 2026-09-27 decision: merge-resolution correctness is final for renames
+(no later gate) and resynthesis edits the ledger directly (merged/deleted claims) — both treated as
+load-bearing. Only genuinely ungated/procedural stages stay minimal: `pass0_type_recovery`,
+`pass1_rename`, `scheduler`.
 
 **Constructor signatures are THE contract** between run.py and every component — full table in
 `docs/skills/cross-references.md`; module-level async fns (not classes) for build_nodes/build_edges/

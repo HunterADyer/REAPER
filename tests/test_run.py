@@ -34,10 +34,10 @@ def _config_for(tmp_path, *, data_dir: str, traces_dir: str) -> str:
         "[vllm]\n"
         'base_url = "http://localhost:8035/v1"\nmodel = "deepseek"\n'
         "[thinking_levels]\n"
-        'pass0_type_recovery = "high"\npass1_rename = "minimal"\n'
+        'pass0_type_recovery = "minimal"\npass1_rename = "minimal"\n'
         'pass2_review = "max"\ncritic = "high"\n'
-        'investigation = "high"\nmerge = "medium"\n'
-        'resynthesis = "high"\nscheduler = "low"\n'
+        'investigation = "high"\nmerge = "max"\n'
+        'resynthesis = "max"\nscheduler = "minimal"\n'
         "[limits]\n"
         "max_critic_rejections = 3\nmax_review_retries = 2\n"
         "max_resynthesis_iterations = 5\nmax_investigation_iterations = 200\n"

@@ -85,9 +85,10 @@ pass1_rename = "minimal"          # ungated (merge is conflict-check only)
 pass2_review = "max"              # GATED — main claim source + task critic
 critic = "high"                   # GATED — the gate itself (sets truth_level)
 investigation = "high"            # GATED — claims critic-gated, requeue on reject
-merge = "minimal"                 # ungated conflict resolution
-resynthesis = "minimal"           # NOT critic-gated, but edits ledger directly —
-                                  #   borderline; raise to "high" if load-bearing
+merge = "max"                     # conflict-resolution correctness is FINAL for
+                                  #   renames (no later gate) — max per 2026-09-27
+resynthesis = "max"               # edits ledger directly (merged/deleted claims);
+                                  #   load-bearing, no later gate — max per 2026-09-27
 scheduler = "minimal"             # ungated task planning
 
 [limits]

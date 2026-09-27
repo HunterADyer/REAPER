@@ -39,7 +39,7 @@ async def test_resynthesis_agent_returns_structured_result():
                   structured_model_name="ResynthesisResult")
     tracer = RecordingTracer()
     agent = ResynthesisAgent(llm, None, None, None, tracer,
-                             {"thinking_levels": {"resynthesis": "high"}})
+                             {"thinking_levels": {"resynthesis": "max"}})
 
     result = await agent.run("SUBGRAPH CONTEXT: 0x1000, 0x2000")
 

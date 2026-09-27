@@ -12,25 +12,25 @@ model = "deepseek"
 # Structured JSON responses typically consume 200-2000 tokens, so
 # these values leave headroom beyond the thinking portion.
 # minimal=1024, low=4096, medium=12288, high=20480, max=40960.
-# AUDIT 2026-09-27 — policy: QUALITY-GATED -> high/xhigh; NOT gated -> minimal.
-#   Gated (a critic/review gate judges the output and it feeds the report):
-#     pass2_review="max"  review agent is the main claim/rename source + the
-#                         task critic derives from this same level
-#     critic="high"       the gate itself — sets truth_level on every claim
-#     investigation="high" claims are critic-gated; task requeued on reject
-#   Ungated (no downstream truth gate; keep minimal to protect the shared
-#     serialized :8035 budget):
-#     pass0_type_recovery, pass1_rename, merge, scheduler -> "minimal"
-#   Borderline: resynthesis is NOT critic-gated but edits the ledger directly
-#   (merged/deleted claims). "minimal" per the strict rule; raise to "high"
-#   if you consider it load-bearing.
+# AUDIT 2026-09-27 — policy: quality-gated / load-bearing -> max, else minimal.
+#   MAX/HIGH (output judged by a gate OR load-bearing for the final report):
+#     pass2_review="max"     review agent is the main claim/rename source + the
+#                            task critic derives from this same level
+#     critic="high"          the gate itself — sets truth_level on every claim
+#     investigation="high"   claims are critic-gated; task requeued on reject
+#     merge="max"            conflict-resolution correctness is FINAL for renames
+#                            (no later gate) — set max 2026-09-27
+#     resynthesis="max"      edits the ledger directly (merged/deleted claims);
+#                            load-bearing, no later gate — set max 2026-09-27
+#   Minimal (no downstream truth gate; protect the shared serialized :8035 budget):
+#     pass0_type_recovery, pass1_rename, scheduler -> "minimal"
 pass0_type_recovery = "minimal"
 pass1_rename = "minimal"
 pass2_review = "max"
 critic = "high"
 investigation = "high"
-merge = "minimal"
-resynthesis = "minimal"
+merge = "max"
+resynthesis = "max"
 scheduler = "minimal"
 
 [limits]
