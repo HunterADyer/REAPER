@@ -63,6 +63,7 @@ async def test_send_returns_response_and_records_history(fake_vllm):
         roles = [m["role"] for m in body["messages"]]
         assert roles == ["system", "user"]
         assert "extra_body" not in body
+        assert "response_format" not in body  # plain call ships no schema
     finally:
         await client.close()
 
@@ -97,28 +98,34 @@ async def test_retry_exhausted_raises_transient(fake_vllm):
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("zero_backoff")
-async def test_structured_output_extra_body(fake_vllm):
-    # server inspects the request and echoes whether structured_outputs present
+async def test_structured_output_uses_response_format_json_schema(fake_vllm):
+    """Live-verified (2026-09-27): the :8035 vLLM build only honors the
+    OpenAI-standard ``response_format`` json_schema — ``extra_body``
+    structured_outputs and ``guided_json`` are silently ignored. Assert the
+    client ships a valid json_schema and derives the schema name from title."""
     def builder(body):
-        eb = body.get("extra_body", {})
-        return (
-            '{"found": true, "disable_any_whitespace": '
-            f'{str(eb.get("disable_any_whitespace")).lower()}}}'
-            if "structured_outputs" in eb
-            else '{"found": false}'
-        )
+        rf = body.get("response_format", {})
+        return "found" if rf.get("type") == "json_schema" else "missing"
 
     server = fake_vllm(content_builder=builder)
     client = ReaperLLMClient(server.base_url, model="fake-model")
     try:
         await client.create_session("s_struct", "sys")
-        schema = {"type": "object", "properties": {"x": {"type": "integer"}}}
+        schema = {
+            "type": "object",
+            "properties": {"x": {"type": "integer"}},
+            "title": "Probe",
+        }
         text = await client.send(
             "s_struct", "go", thinking_level="minimal", structured_output=schema
         )
-        assert text == (
-            '{"found": true, "disable_any_whitespace": true}'
-        )
+        assert text == "found"
+        rf = server.payloads[-1]["response_format"]
+        assert rf["type"] == "json_schema"
+        assert rf["json_schema"]["name"] == "Probe"  # derived from schema title
+        assert rf["json_schema"]["schema"] == schema
+        # legacy mechanisms must not be shipped (silently ignored by :8035)
+        assert "extra_body" not in server.payloads[-1]
     finally:
         await client.close()
 
@@ -163,6 +170,41 @@ async def test_sessions_are_isolated(fake_vllm):
             client.get_history("s1")
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_request_path_not_doubled_when_base_url_has_v1(fake_vllm, zero_backoff):
+    """Finding #9 (found via live endpoint smoke): a base_url carrying the
+    OpenAI-SDK '/v1' suffix (as in configs/default.toml) must be normalized to
+    the server root so the request lands on exactly '/v1/chat/completions' —
+    httpx appends the request path to the base path, so keeping '/v1' there
+    produced a doubled '/v1/v1/chat/completions' that 404s on vLLM."""
+    server = fake_vllm()
+    client = ReaperLLMClient(server.base_url + "/v1", model="fake-model")
+    try:
+        assert client.base_url == server.base_url  # normalized to server root
+        await client.create_session("s_path", "sys")
+        await client.send("s_path", "hi", thinking_level="minimal")
+        assert server.paths[-1] == "/v1/chat/completions", server.paths
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_base_url_normalization_with_and_without_v1_suffix():
+    """Normalization must be idempotent across base_url shapes and never fall
+    back to mis-resolving the OpenAI-compatible API path."""
+    cases = [
+        ("http://127.0.0.1:8035/v1", "http://127.0.0.1:8035"),
+        ("http://127.0.0.1:8035/", "http://127.0.0.1:8035"),
+        ("http://127.0.0.1:8035", "http://127.0.0.1:8035"),
+    ]
+    for base, expected in cases:
+        client = ReaperLLMClient(base, model="m")
+        try:
+            assert client.base_url == expected, (base, client.base_url)
+        finally:
+            await client.close()
 
 
 @pytest.mark.asyncio

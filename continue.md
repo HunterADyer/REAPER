@@ -137,8 +137,9 @@ Run phases (run.py `--phases`, default `2,3,4,5,6,7`; resumable because state pe
 Write discipline (hard rules): ALL Neo4j writes are `MERGE` (idempotent by design); Neo4j is written FIRST,
 SQLite second; a SQLite failure after a successful Neo4j write is logged, never rolled back; every aiosqlite
 connection uses `PRAGMA journal_mode=WAL` + `PRAGMA foreign_keys=ON` and all writes go through a per-instance
-`asyncio.Lock`. Structured LLM output uses `extra_body={"structured_outputs": schema,
-"disable_any_whitespace": True}` — `guided_json` is silently ignored by vLLM.
+`asyncio.Lock`. Structured LLM output uses the OpenAI-standard `response_format` json_schema —
+verified live 2026-09-27 on :8035; `extra_body.structured_outputs` and `guided_json` are silently
+ignored by this vLLM build (see §10.0 finding #10).
 
 ---
 
@@ -180,7 +181,8 @@ Each entry: purpose • design choices • interface contract • dependencies �
 **`llm_client.py` (D1.3) — vLLM client.**
 - Per-session in-memory convo history + lock; retry-with-backoff (1/2/4s) on 5xx/timeouts only (4xx fatal);
   thinking_level → TOTAL `max_completion_tokens` budget {minimal 1024 … max 40960}; structured output via
-  `extra_body`. History appended only on success.
+  OpenAI `response_format` json_schema (see §10.0 finding #10 — `extra_body`/`guided_json` are ignored by
+  the live :8035 build). History appended only on success. base_url normalized to server root (found #9).
 - **Gap:** connection is per-instance `httpx.AsyncClient`; no auth/token or /v1/models negotiation. v1
   assumptions hold for a single-model endpoint (config model = `deepseek`).
 
@@ -451,6 +453,22 @@ remain open caveats (no code change needed; just re-run ground-truth extraction 
    exercised in CI-style tests.
 5. **#7 MINOR — naming.** Async orchestrator renamed `main` → `run_pipeline`; the console-script wrapper
    `def main()` is unchanged (still targeted by `reaper.run:main`).
+6. **#9 (NEW, live-found 2026-09-27) — every LLM call 404'd via doubled `/v1` path.** `configs/default.toml`
+   `base_url` carries the OpenAI-SDK `/v1` suffix (`http://localhost:8035/v1`), and httpx *appends* the
+   request path (`/v1/chat/completions`) onto the base path — so the client was POSTing
+   `http://localhost:8035/v1/v1/chat/completions` (404). `ReaperLLMClient.__init__` now normalizes base_url to
+   the server root (strips a trailing `/v1`) so the explicit `/v1/...` path is never doubled. Guards:
+   `test_request_path_not_doubled_when_base_url_has_v1` + `test_base_url_normalization_with_and_without_v1_suffix`
+   (fake server now records request paths). Discovered by `scripts/smoke_llm_endpoint.py` (live, strictly
+   serialized against the shared :8035 endpoint).
+7. **#10 (NEW, live-found 2026-09-27) — structured-output mechanism silently ignored by live vLLM.** The
+   design assumed `extra_body={"structured_outputs": ...}` (never `guided_json`). Live serialized probes
+   proved the shared :8035 build honors ONLY the OpenAI-standard
+   `response_format={"type":"json_schema","json_schema":{...}}`; `extra_body.structured_outputs`,
+   `guided_json`, and `response_format.json_object` were all silently ignored (structured outputs came back
+   as plain text / wrong JSON keys → unparseable agent submissions). `ReaperLLMClient.send()` now ships
+   `response_format` json_schema (name derived from schema `title`, fallback `response`); a real live response
+   was schema-validated. Guard: `test_structured_output_uses_response_format_json_schema`.
 
 ---
 

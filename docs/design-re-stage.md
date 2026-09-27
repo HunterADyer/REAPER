@@ -197,9 +197,11 @@ class ReaperLLMClient:
         The budget must cover both thinking AND the JSON response.
 
         structured_output: Pydantic model_json_schema() dict.
-        If provided, passes extra_body={"structured_outputs": schema,
-        "disable_any_whitespace": True}.
-        NEVER use guided_json (silently ignored by vLLM).
+        If provided, sends OpenAI-standard response_format={"type":"json_schema",
+        "json_schema":{"name": <schema title | "response">, "schema": schema}}.
+        Verified live 2026-09-27 against the shared :8035 vLLM: the formerly
+        documented extra_body={"structured_outputs": ...} and guided_json are
+        SILENTLY IGNORED by this build — do not use them.
 
         Retries transient errors (HTTP 5xx, connection refused,
         httpx.TimeoutException) with exponential backoff: 1s, 2s, 4s.
@@ -1769,8 +1771,8 @@ Total: **28 deliverables across 8 phases.**
 ## Summary of Constraints
 
 - **Fully async** (`asyncio` + `httpx.AsyncClient` + `neo4j.AsyncDriver`)
-- **One model:** DeepSeek-V4-Flash 0731 Q4 via vLLM on :8010. All agents same model, different prompts + thinking budgets
-- **Structured output:** All agent I/O via vLLM `structured_outputs` (Pydantic schemas). Never `guided_json`
+- **One model:** DeepSeek-V4-Flash via vLLM on :8035 (shared). All agents same model, different prompts + thinking budgets
+- **Structured output:** All agent I/O via OpenAI-standard `response_format` json_schema (Pydantic schemas). Verified live 2026-09-27: `extra_body.structured_outputs` / `guided_json` are silently ignored by this build
 - **Thinking budget:** `max_completion_tokens` controls depth (minimal=1024 → max=40960, includes response headroom)
 - **Concurrency:** `asyncio.Semaphore(max_concurrent_agents)` for parallel dispatch
 - **Claims created before critic:** Insert with truth_level=NULL, critic sets it

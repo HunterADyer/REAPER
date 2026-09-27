@@ -1,7 +1,9 @@
 """Submission protocol — Deliverable 3.3.
 
 Pydantic models for all agent I/O. These double as vLLM structured output
-schemas (``model_json_schema()`` -> ``structured_outputs``). Also provides
+schemas (``model_json_schema()`` -> OpenAI ``response_format`` json_schema —
+the only constrained-decoding mechanism the live :8035 build honors, verified
+2026-09-27). Also provides
 ``get_schema()`` and ``parse_response()`` helpers.
 
 Every model here is referenced by agents, dispatchers, and the harness — do

@@ -45,12 +45,14 @@ Phase 8:                8.1 → 8.2 → 8.3
   <!-- NOTES: ReaperLLMClient, LLMTransientError, session management, retry logic.
        Implemented in harness/llm_client.py (backoff 1s/2s/4s, retries 5xx/timeouts
        only; 4xx fatal; history only recorded on success). Structured output via
-       extra_body={"structured_outputs": schema, "disable_any_whitespace": True} —
-       NEVER guided_json. Added async context manager (__aenter__/__aexit__) as a
+       OpenAI response_format json_schema (verified live 2026-09-27 on :8035;
+       extra_body structured_outputs / guided_json are silently ignored). Added
+       async context manager (__aenter__/__aexit__) as a
        convenience beyond the design interface. Tests in tests/test_llm_client.py
        run against a REAL threaded fake-vLLM HTTP server (tests/conftest.py); all
-       8 tests green (happy path, 503→retry→success, retry exhaustion raises
-       LLMTransientError, structured_output transport verified, bad thinking_level
+       10 tests green (happy path, 503→retry→success, retry exhaustion raises
+       LLMTransientError, structured_output response_format json_schema verified,
+       bad thinking_level
        → ValueError, missing session → KeyError, session isolation, context mgr).
        NOTE: local env runs `python3` (no `python` alias). -->
 
@@ -318,7 +320,9 @@ Phase 8:                8.1 → 8.2 → 8.3
 - [1.3] Retry tests: `_BACKOFF_SECONDS` is a module global referenced at call
   time, so tests monkeypatch it to [0.0,0.0,0.0] — no 7s sleeps. Fake vLLM
   server is a real threaded HTTP server (not a mock) so the retry loop,
-  transport, and structured_output extra_body are exercised end-to-end.
+  transport, and structured_output response_format json_schema are exercised
+  end-to-end (request paths are recorded to guard against base_url path
+  doubling, finding #9).
 - [1.5] FakeNeo4jDriver `_FakeAsyncResult` must mirror the REAL neo4j
   AsyncResult contract: it must support BOTH `await session.run(...)` (returning
   itself) AND `async for` iteration. The first version lacked `__await__`, so

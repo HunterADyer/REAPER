@@ -100,6 +100,7 @@ class _FakeVLLMHandler(BaseHTTPRequestHandler):
     fail_status: int = 503
     content_builder: Callable[[dict], str] = lambda body: "4"  # default answer
     payloads: list[dict] = []  # every request body captured for assertions
+    paths: list[str] = []  # every request path captured for assertions
 
     protocol_version = "HTTP/1.1"
 
@@ -122,6 +123,7 @@ class _FakeVLLMHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             body = {}
         self.__class__.payloads.append(body)
+        self.__class__.paths.append(self.path)
 
         self.__class__.responses_served += 1
         if self.__class__.responses_served <= self.__class__.fail_first_n:
@@ -181,6 +183,10 @@ class FakeVLLMServer:
         return _FakeVLLMHandler.payloads
 
     @property
+    def paths(self) -> list[str]:
+        return _FakeVLLMHandler.paths
+
+    @property
     def responses_served(self) -> int:
         return _FakeVLLMHandler.responses_served
 
@@ -189,6 +195,7 @@ class FakeVLLMServer:
     def start(self) -> None:
         _FakeVLLMHandler.responses_served = 0
         _FakeVLLMHandler.payloads = []
+        _FakeVLLMHandler.paths = []
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
 

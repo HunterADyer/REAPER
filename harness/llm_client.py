@@ -1,14 +1,17 @@
 """vLLM client wrapper — Deliverable 1.3.
 
 Async async client that talks to the local vLLM server
-(DeepSeek-V4-Flash on :8010). Manages multiple concurrent sessions, each
+(DeepSeek-V4-Flash on :8035). Manages multiple concurrent sessions, each
 with its own in-memory conversation history, per-session asyncio.Lock, and
 retry-with-backoff on transient errors.
 
-Structured output is requested via ``extra_body={"structured_outputs": schema,
-"disable_any_whitespace": True}`` — NEVER ``guided_json`` (vLLM silently
-ignores it). ``max_completion_tokens`` is the TOTAL budget (thinking +
-response) driven by ``thinking_level``.
+Structured output is requested via the OpenAI-standard
+``response_format={"type": "json_schema", "json_schema": {name, schema}}``.
+Verified live (2026-09-27) on the shared :8035 vLLM build: the formerly
+documented ``extra_body={"structured_outputs": ...}`` and ``guided_json`` are
+SILENTLY IGNORED by this server and must not be used.
+``max_completion_tokens`` is the TOTAL budget (thinking + response) driven by
+``thinking_level``.
 """
 
 from __future__ import annotations
@@ -47,7 +50,16 @@ class ReaperLLMClient:
     """
 
     def __init__(self, base_url: str, model: str, max_retries: int = 3):
+        # Normalize to the SERVER ROOT. httpx APPENDS the request path
+        # ("/v1/chat/completions") onto the configured base path, so a base_url
+        # that already carries the OpenAI-SDK "/v1" suffix (as in
+        # configs/default.toml) would resolve to a doubled, 404-prone
+        # ".../v1/v1/chat/completions". Strip that suffix once here so the
+        # explicit "/v1/..." path sent in `_post_chat` is always the single
+        # OpenAI-compatible API path.
         self.base_url = base_url.rstrip("/")
+        if self.base_url.endswith("/v1"):
+            self.base_url = self.base_url[:-3]
         self.model = model
         self.max_retries = max_retries
         self._http = httpx.AsyncClient(
@@ -115,9 +127,18 @@ class ReaperLLMClient:
                 "max_completion_tokens": budget,
             }
             if structured_output is not None:
-                payload["extra_body"] = {
-                    "structured_outputs": structured_output,
-                    "disable_any_whitespace": True,
+                # Live :8035 vLLM only enforces the OpenAI-standard
+                # response_format json_schema (verified 2026-09-27 by live
+                # probe — see scripts/smoke_llm_endpoint.py); the formerly
+                # documented extra_body={"structured_outputs": ...} and
+                # guided_json are silently ignored by this build.
+                title = str(structured_output.get("title", "response"))
+                name = "".join(
+                    ch if ch.isalnum() or ch in "_-" else "_" for ch in title
+                ) or "response"
+                payload["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {"name": name, "schema": structured_output},
                 }
 
             text = await self._send_with_retry(payload)
