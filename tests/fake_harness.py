@@ -152,6 +152,19 @@ class TagRecordingBinaryView(FakeBinaryView):
         return (type_str, None)
 
 
+class RecordingTracer:
+    """Recording tracer double: captures every log() call in memory."""
+
+    def __init__(self):
+        self.events = []
+
+    async def log(self, event_type, session_id, data):
+        self.events.append({
+            "event_type": event_type, "session_id": session_id, "data": dict(data or {}),
+        })
+        return None
+
+
 def make_extractor_with_tags(**view_kwargs):
     """Build a FakeExtractor backed by a TagRecordingBinaryView."""
     bv = TagRecordingBinaryView(**view_kwargs)
@@ -162,6 +175,7 @@ __all__ = [
     "ScriptedExtractor",
     "StubLLM",
     "TagRecordingBinaryView",
+    "RecordingTracer",
     "make_extractor_with_tags",
 ]
 
