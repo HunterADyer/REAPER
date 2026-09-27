@@ -71,22 +71,24 @@ user = "neo4j"
 password = "reaper"
 
 [vllm]
-base_url = "http://localhost:8010/v1"
-model = "deepseek-ai/DeepSeek-V4-Flash-0731"
+base_url = "http://localhost:8035/v1"
+model = "deepseek"
 
 [thinking_levels]
 # Maps to max_completion_tokens (TOTAL budget: thinking + response).
 # Structured JSON responses typically consume 200-2000 tokens, so
 # these values leave headroom beyond the thinking portion.
 # minimal=1024, low=4096, medium=12288, high=20480, max=40960.
-pass0_type_recovery = "high"
-pass1_rename = "minimal"
-pass2_review = "max"
-critic = "high"
-investigation = "high"
-merge = "medium"
-resynthesis = "high"
-scheduler = "low"
+# AUDIT 2026-09-27 — policy: QUALITY-GATED -> high/xhigh; NOT gated -> minimal.
+pass0_type_recovery = "minimal"   # ungated (struct claims recorded at "inferred")
+pass1_rename = "minimal"          # ungated (merge is conflict-check only)
+pass2_review = "max"              # GATED — main claim source + task critic
+critic = "high"                   # GATED — the gate itself (sets truth_level)
+investigation = "high"            # GATED — claims critic-gated, requeue on reject
+merge = "minimal"                 # ungated conflict resolution
+resynthesis = "minimal"           # NOT critic-gated, but edits ledger directly —
+                                  #   borderline; raise to "high" if load-bearing
+scheduler = "minimal"             # ungated task planning
 
 [limits]
 max_critic_rejections = 3          # after this, accept at 'speculation' and move on
@@ -97,8 +99,8 @@ max_concurrent_agents = 8          # parallel vLLM sessions
 max_context_tokens = 32768         # truncation limit for context assembly
 
 [paths]
-data_dir = "reaper/data"
-traces_dir = "reaper/data/traces"
+data_dir = "data"
+traces_dir = "data/traces"
 ```
 
 **Test:** `pip install -e .` succeeds. `from reaper.harness import llm_client` imports without error. `tomllib.load(open("reaper/configs/default.toml", "rb"))` parses without error.
@@ -1066,7 +1068,7 @@ class TypeRecoveryAgent:
 **Logic:**
 1. For each StructCandidate from 4.1:
    - `context = await context_asm.for_struct_candidate(candidate)`
-   - `response = await llm.send(session, context, thinking_level="high", structured_output=get_schema(StructDefinition))`
+   - `response = await llm.send(session, context, thinking_level="minimal", structured_output=get_schema(StructDefinition))`
    - Parse into StructDefinition
    - Create a claim in the ledger for each struct (truth_level=NULL, to be evaluated later when critic is available; for first implementation, set to 'inferred' directly)
 
