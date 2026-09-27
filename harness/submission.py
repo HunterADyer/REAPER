@@ -191,6 +191,49 @@ def parse_response(model_class, text: str):
         data = json.loads(cleaned[start : end + 1])
     return model_class.model_validate(data)
 
+
+async def send_structured(
+    llm,
+    session_id: str,
+    message: str,
+    model_class,
+    thinking_level: str = "low",
+    retries: int = 1,
+):
+    """Send ``message`` with the structured schema for ``model_class`` and parse it.
+
+    Retries ``retries`` times (default 1) with a short recovery prompt after a
+    ``ValidationError``. A truncate/format slip by vLLM is much more likely than
+    a genuinely unanswerable question, so re-prompting the SAME session (which
+    already holds the full context + the prior invalid attempt) is cheap and
+    materially reduces payloads that "silently parse partially."
+
+    ``llm`` may be any object exposing ``send(session_id, message, ...,
+    structured_output=...)`` (the real client or the test ``StubLLM``).
+
+    Raises the last ``ValidationError`` if every attempt fails to parse.
+    """
+    last_error: ValidationError | None = None
+    for attempt in range(int(retries) + 1):
+        response = await llm.send(
+            session_id,
+            message,
+            thinking_level=thinking_level,
+            structured_output=get_schema(model_class),
+        )
+        try:
+            return parse_response(model_class, response)
+        except ValidationError as exc:  # pragma: no cover - exercised via StubLLM
+            last_error = exc
+            message = (
+                "That response did not match the required JSON schema. "
+                "Return ONLY valid JSON matching the schema exactly."
+            )
+    if last_error is not None:
+        raise last_error
+    return model_class.model_validate({})  # pragma: no cover - defensive
+
+
 __all__ = [
     "TRUTH_LEVELS",
     "_TRUTH_LEVEL_VALUES",
@@ -214,5 +257,6 @@ __all__ = [
     "MergeDecision",
     "get_schema",
     "parse_response",
+    "send_structured",
 ]
 

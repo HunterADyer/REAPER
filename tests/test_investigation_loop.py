@@ -27,6 +27,7 @@ class StubTodo:
         self.completed = []
         self.requeued = []
         self.created = []
+        self.deps_added = []
 
     def put(self, task):
         self.by_id[task["id"]] = task
@@ -55,6 +56,9 @@ class StubTodo:
                            "context_spec": context_spec, "status": "pending"}
         self.created.append(tid)
         return tid
+
+    async def add_dependencies(self, task_id, dep_ids):
+        self.deps_added.append((task_id, list(dep_ids)))
 
 
 class StubScheduler:
@@ -132,10 +136,13 @@ def _task(task_id):
             "context_spec": {}, "status": "pending"}
 
 
-def _loop(llm, todo, inv_results, stuck=False):
+def _loop(llm, todo, inv_results, stuck=False, max_iterations=None):
     ledger = StubLedger()
     tracer = RecordingTracer()
-    config = {"limits": {"max_concurrent_agents": 4, "max_critic_rejections": 3},
+    limits = {"max_concurrent_agents": 4, "max_critic_rejections": 3}
+    if max_iterations is not None:
+        limits["max_investigation_iterations"] = max_iterations
+    config = {"limits": limits,
               "thinking_levels": {"critic": "high"}}
     loop = InvestigationLoop(
         StubScheduler(todo, never_ready=stuck), StubInvAgent(inv_results),
@@ -186,3 +193,51 @@ async def test_stuck_when_nothing_ready_and_nothing_in_progress():
     loop, ledger, tracer = _loop(llm, todo, [], stuck=True)
     assert await loop.run() is False
     assert any(e["event_type"] == "investigation_stuck" for e in tracer.events)
+
+
+@pytest.mark.asyncio
+async def test_loop_is_bounded_by_iteration_cap():
+    """A model that keeps spawning subtasks must not livelock the pipeline —
+    the iteration cap returns with a clear signal instead."""
+    class AlwaysSubtasks(StubInvAgent):
+        def __init__(self):
+            super().__init__([])
+
+        async def run(self, task):
+            return InvestigationResult(
+                answer="deeper...", claims=[],
+                subtasks=[TaskSpec(description="another sub", start_position="0x2000",
+                                   goal="dig deeper")],
+            )
+
+    todo = StubTodo()
+    todo.put(_task(1))
+    loop, ledger, tracer = _loop(
+        StubLLM(), todo, [], max_iterations=2,
+    )
+    loop.inv_agent = AlwaysSubtasks()
+    assert await loop.run() is False
+    # cap reached (not a stuck signal, but bounded) and reported
+    assert any(e["event_type"] == "investigation_iteration_cap" for e in tracer.events)
+    assert len(todo.requeued) >= 2        # the parent was retried at least twice
+    assert not await loop.todo.is_empty()  # never drained within the budget
+
+
+@pytest.mark.asyncio
+async def test_parent_is_dependent_on_subtasks():
+    """When a task spawns subtasks it is NOT retried until they complete — the
+    parent is wired as a dependant of its own subtasks (no deadlock since the
+    subtasks never depend on the parent)."""
+    todo = StubTodo()
+    todo.put(_task(1))
+    first = InvestigationResult(
+        answer="needs callee", claims=[], subtasks=[TaskSpec(
+            description="what does callee do", start_position="0x2000",
+            goal="characterize callee")],
+    )
+    completed = InvestigationResult(answer="done", claims=[], subtasks=[])
+    llm = StubLLM()
+    loop, ledger, tracer = _loop(llm, todo, [first, completed, completed])
+
+    assert await loop.run() is True
+    assert todo.deps_added == [(1, [100])]  # parent 1 now waits on subtask 100

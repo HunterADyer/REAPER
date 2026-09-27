@@ -22,6 +22,9 @@ _TRUTH_LEVELS = (
     "speculation", "inferred", "low_confidence", "mid_confidence", "high_confidence"
 )
 
+# Levels that count as credible evidence for completion/coverage reporting.
+_MID_OR_ABOVE = {"mid_confidence", "high_confidence"}
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS functions (
     address TEXT PRIMARY KEY,
@@ -51,6 +54,23 @@ CREATE TABLE IF NOT EXISTS evidence_links (
     address_end TEXT NOT NULL,
     description TEXT,
     FOREIGN KEY (claim_id) REFERENCES claims(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS structs (
+    name TEXT PRIMARY KEY,
+    base_type TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS struct_fields (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    struct_name TEXT NOT NULL,
+    offset INTEGER NOT NULL,
+    name TEXT,
+    type_str TEXT,
+    size INTEGER,
+    confidence TEXT,
+    FOREIGN KEY (struct_name) REFERENCES structs(name) ON DELETE CASCADE
 );
 """
 
@@ -260,17 +280,39 @@ class Ledger:
             for r in rows
         ]
 
-    async def all_functions_have_claims(self) -> bool:
-        """Every :Function in Neo4j has at least one claim with
-        truth_level IS NOT NULL in the ledger."""
-        db = self._require_ready()
+    async def _graph_function_addresses(self, include_pinned: bool = True) -> list[str]:
+        """Return function addresses from Neo4j, optionally excluding pinned ones.
+
+        Pinned functions (imports/library/named symbols — design § 2.4) are
+        given, not discovered; scoping claim-completion to renamable functions
+        keeps the completion criterion honest (see completion.is_re_complete).
+        """
         try:
+            if include_pinned:
+                query = "MATCH (f:Function) RETURN f.address AS address"
+            else:
+                query = (
+                    "MATCH (f:Function) "
+                    "WHERE (f.pinned IS NULL OR f.pinned = false) "
+                    "RETURN f.address AS address"
+                )
             async with self.neo4j_driver.session() as session:
-                res = await session.run("MATCH (f:Function) RETURN f.address AS address")
-                func_addresses = [rec["address"] for rec in [r async for r in res]]
+                res = await session.run(query)
+                return [rec["address"] for rec in [r async for r in res]]
         except Exception:
-            log.exception("all_functions_have_claims: Neo4j query failed")
-            return False
+            log.exception("ledger: _graph_function_addresses failed")
+            return []
+
+    async def all_functions_have_claims(self, include_pinned: bool = True) -> bool:
+        """Every (optionally non-pinned) :Function in Neo4j has at least one
+        claim with truth_level IS NOT NULL in the ledger.
+
+        ``include_pinned=True`` (default) preserves the original all-functions
+        semantic; completion gates on renamable functions via
+        ``include_pinned=False``.
+        """
+        func_addresses = await self._graph_function_addresses(include_pinned)
+        db = self._require_ready()
         for addr in func_addresses:
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM claims WHERE function_address = ? "
@@ -282,6 +324,118 @@ class Ledger:
                 return False
         return True
 
+    async def claim_coverage_stats(self, include_pinned: bool = False) -> dict:
+        """Aggregate claim coverage over (renamable by default) functions.
+
+        Returns counts for reporting so the runner can offer partial credit and
+        point at the specific gap instead of a bare boolean:
+        {total_renamable, with_claims, with_mid_confidence_or_above,
+         speculation_only, no_claims, total_graph_functions, pinned_functions}.
+        """
+        graph_addrs = await self._graph_function_addresses(include_pinned=True)
+        scope_addrs = set(await self._graph_function_addresses(include_pinned))
+        pinned = len(set(graph_addrs) - scope_addrs)
+        db = self._require_ready()
+        with_claims = 0
+        with_mid_plus = 0
+        speculation_only = 0
+        for addr in sorted(scope_addrs):
+            cursor = await db.execute(
+                "SELECT truth_level FROM claims WHERE function_address = ? "
+                "AND truth_level IS NOT NULL",
+                (addr,),
+            )
+            rows = await cursor.fetchall()
+            levels = {r[0] for r in rows}
+            if not levels:
+                continue
+            with_claims += 1
+            if levels & _MID_OR_ABOVE:
+                with_mid_plus += 1
+            elif levels == {"speculation"}:
+                speculation_only += 1
+        return {
+            "total_graph_functions": len(graph_addrs),
+            "renamable_functions": len(scope_addrs),
+            "pinned_functions": pinned,
+            "with_claims": with_claims,
+            "with_mid_confidence_or_above": with_mid_plus,
+            "speculation_only": speculation_only,
+            "no_claims": len(scope_addrs) - with_claims,
+        }
+
+    async def sweep_null_claims(self) -> int:
+        """DELETE claims that were never evaluated (truth_level still NULL).
+
+        Such claims are orphaned rows from LLM/parse failures or a critic that
+        never ran. They permanently block ``INCOMPLETE``/completion reporting,
+        so the runner sweeps them before writing the final reaper-output report.
+        Evidence rows cascade-delete with their claim. Returns the count removed.
+        """
+        db = self._require_ready()
+        async with self._write_lock:
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM claims WHERE truth_level IS NULL"
+            )
+            row = await cursor.fetchone()
+            count = int(row[0]) if row else 0
+            if count:
+                await db.execute("DELETE FROM claims WHERE truth_level IS NULL")
+                await db.commit()
+        return count
+
+    # -- struct definitions (type recovery, design § 8.3 metric 5) -------------
+
+    async def record_struct(self, struct_def) -> None:
+        """Persist a StructDefinition for later export/reporting. Idempotent —
+        re-running type recovery for the same struct name replaces its fields."""
+        name = getattr(struct_def, "struct_name", None)
+        if not name:
+            return
+        fields = getattr(struct_def, "fields", None) or []
+        db = self._require_ready()
+        async with self._write_lock:
+            await db.execute("DELETE FROM struct_fields WHERE struct_name = ?", (name,))
+            await db.execute(
+                "INSERT OR REPLACE INTO structs (name, base_type, created_at) "
+                "VALUES (?, ?, ?)",
+                (name, getattr(struct_def, "base_type", None), _now()),
+            )
+            for field in fields:
+                await db.execute(
+                    "INSERT INTO struct_fields (struct_name, offset, name, "
+                    "type_str, size, confidence) VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        name,
+                        int(getattr(field, "offset", 0)),
+                        getattr(field, "name", None),
+                        getattr(field, "type_str", None),
+                        int(getattr(field, "size", 0) or 0),
+                        getattr(field, "confidence", None),
+                    ),
+                )
+            await db.commit()
+
+    async def get_structs(self) -> dict[str, list[dict]]:
+        """Return {struct_name: [{offset, name, type_str, size, confidence}]}."""
+        db = self._require_ready()
+        cursor = await db.execute(
+            "SELECT struct_name, offset, name, type_str, size, confidence "
+            "FROM struct_fields ORDER BY struct_name, offset"
+        )
+        rows = await cursor.fetchall()
+        out: dict[str, list[dict]] = {}
+        for r in rows:
+            out.setdefault(r[0], []).append({
+                "offset": r[1],
+                "name": r[2],
+                "type_str": r[3],
+                "size": r[4],
+                "confidence": r[5],
+            })
+        return out
+
 
 __all__ = ["Ledger"]
+
 

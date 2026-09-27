@@ -23,8 +23,9 @@ from pathlib import Path
 from reaper.harness.submission import (
     CriticOutcome,
     CriticVerdict,
-    get_schema,
-    parse_response,
+    get_schema,  # noqa: F401  (kept for API parity)
+    parse_response,  # noqa: F401  (kept for API parity)
+    send_structured,
 )
 
 log = logging.getLogger(__name__)
@@ -88,15 +89,15 @@ class CriticEvaluator:
         session_id = f"critic_{claim_id}"
         try:
             await self.llm.create_session(session_id, self.prompt)
-            response = await self.llm.send(
+            verdict = await send_structured(
+                self.llm,
                 session_id,
                 payload,
+                CriticVerdict,
                 thinking_level=self.config.get("thinking_levels", {}).get(
                     "critic", "high"
                 ),
-                structured_output=get_schema(CriticVerdict),
             )
-            verdict = parse_response(CriticVerdict, response)
         finally:
             self.llm.destroy_session(session_id)
 

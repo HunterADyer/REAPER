@@ -110,8 +110,9 @@ def _verdict(accepted):
                        "feedback": "ok"})
 
 
-def _dispatcher(llm):
-    config = {"limits": {"max_critic_rejections": 3, "max_concurrent_agents": 4},
+def _dispatcher(llm, limits=None):
+    config = {"limits": {"max_critic_rejections": 3, "max_concurrent_agents": 4,
+                         **({"max_review_retries": limits} if limits is not None else {})},
               "thinking_levels": {"pass2_review": "max", "critic": "high"}}
     ledger = StubLedger()
     todo = StubTodo()
@@ -150,19 +151,52 @@ async def test_accepted_claim_merges_renames_and_creates_task():
 
 
 @pytest.mark.asyncio
-async def test_all_claims_rejected_drops_renames():
+async def test_all_claims_rejected_still_merges_renames():
+    # Rename merging is DECOUPLED from claim acceptance: a rejected review's
+    # renames are independent work and are still merge-agent-verified. With no
+    # retry budget the single review's renames are merged regardless.
     llm = StubLLM(responses=[
         _review_json(rename=True, claim=True, task=False),
-        _verdict(False),  # claim rejected
+        _verdict(False),  # claim rejected (and deleted by the critic)
     ])
-    dispatcher, ledger, todo, merge = _dispatcher(llm)
+    dispatcher, ledger, todo, merge = _dispatcher(llm, limits=0)
     await dispatcher.run()
 
     assert len(ledger.claims) == 1
     assert ledger.deleted == [1]  # rejected claim deleted by critic
-    # review failed → renames NOT merged
-    assert merge.calls == []
+    # renames merged even though every claim was rejected
+    assert len(merge.calls) == 1
+    session, submission = merge.calls[0]
+    assert session == "pass2_0x1000"
+    assert len(submission.renames) == 1
+    assert submission.claims == []  # claims stay in the ledger, not the merge
     assert todo.tasks == []
+
+
+@pytest.mark.asyncio
+async def test_all_claims_rejected_retries_with_feedback_then_accepts():
+    """Design § 6.1 retry-with-feedback: an all-rejected review re-invokes the
+    review agent with the critic's feedback before the budget runs out."""
+    llm = StubLLM(responses=[
+        _review_json(rename=True, claim=True, task=False),
+        _verdict(False),  # first claim rejected
+        _review_json(rename=True, claim=True, task=False),
+        _verdict(True),   # second attempt's claim accepted
+    ])
+    dispatcher, ledger, todo, merge = _dispatcher(llm, limits=2)
+    await dispatcher.run()
+
+    assert ledger.deleted == [1]          # first attempt's claim rejected+deleted
+    assert len(ledger.levels) == 1        # only the second attempt was accepted
+    assert ledger.levels[0][0] == 2       # claim id 2
+    # exactly ONE merge (the final attempt's renames — no double-merge)
+    assert len(merge.calls) == 1
+    assert len(merge.calls[0][1].renames) == 1
+
+    # The retry carried the critic's feedback into the review agent's context.
+    sends = [c for c in llm.calls if c["op"] == "send"]
+    assert len(sends) == 4  # review1, critic1, review2, critic2
+    assert "PREVIOUS ATTEMPT WAS REJECTED" in sends[2]["message"]
 
 
 @pytest.mark.asyncio

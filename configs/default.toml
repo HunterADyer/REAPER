@@ -4,8 +4,8 @@ user = "neo4j"
 password = "reaper"
 
 [vllm]
-base_url = "http://localhost:8010/v1"
-model = "deepseek-ai/DeepSeek-V4-Flash-0731"
+base_url = "http://localhost:8035/v1"
+model = "deepseek"
 
 [thinking_levels]
 # Maps to max_completion_tokens (TOTAL budget: thinking + response).
@@ -23,12 +23,14 @@ scheduler = "low"
 
 [limits]
 max_critic_rejections = 3          # after this, accept at 'speculation' and move on
+max_review_retries = 2             # Pass 2 review retries with critic feedback
 max_resynthesis_iterations = 5     # prevent investigation<->resynthesis infinite loop
+max_investigation_iterations = 200 # cap the investigation drain loop (livelock guard)
 shadow_copy_hops = 2               # N-hop neighborhood for shadow checkouts
-task_timeout_seconds = 600         # stale task timeout
+task_timeout_seconds = 600         # stale task timeout (measured from assignment)
 max_concurrent_agents = 8          # parallel vLLM sessions
 max_context_tokens = 32768         # truncation limit for context assembly
 
 [paths]
-data_dir = "reaper/data"
-traces_dir = "reaper/data/traces"
+data_dir = "data"
+traces_dir = "data/traces"

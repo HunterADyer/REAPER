@@ -133,10 +133,12 @@ async def test_reset_stale_in_progress_resets_old_tasks(tmp_path):
         fresh = await todo.create_task("new", {}, "0x2", "g", [])
         await todo.assign_task(stale, "s1")
         await todo.assign_task(fresh, "s2")
-        # Backdate the stale task 10 minutes so timeout=5s flags it.
+        # Backdate the stale task's ASSIGNMENT clock 10 minutes so timeout=5s
+        # flags it. created_at is untouchable — staleness is measured from
+        # when the agent started working (started_at), not queue insertion.
         old_ts = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
         await todo._db.execute(
-            "UPDATE tasks SET created_at = ? WHERE id = ?", (old_ts, stale)
+            "UPDATE tasks SET started_at = ? WHERE id = ?", (old_ts, stale)
         )
         await todo._db.commit()
 
@@ -146,7 +148,77 @@ async def test_reset_stale_in_progress_resets_old_tasks(tmp_path):
         fresh_task = await todo.get_task(fresh)
         assert stale_task["status"] == "pending"
         assert stale_task["assigned_to"] is None
+        assert stale_task["started_at"] is None
         assert fresh_task["status"] == "in_progress"  # not stale
+    finally:
+        await todo.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_clock_is_assignment_not_creation_time(tmp_path):
+    from datetime import datetime, timezone, timedelta
+    todo = TodoLedger(str(tmp_path / "todo.db"))
+    await todo.init()
+    try:
+        t = await todo.create_task("queued long ago", {}, "0x1", "g", [])
+        # Backdate creation by 10 minutes, but assign it JUST now.
+        old_ts = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        await todo._db.execute(
+            "UPDATE tasks SET created_at = ? WHERE id = ?", (old_ts, t)
+        )
+        await todo._db.commit()
+        await todo.assign_task(t, "s1")
+        # Long-queued-but-recently-started work must NOT be reset as stale.
+        assert await todo.reset_stale_in_progress(5) == 0
+        task = await todo.get_task(t)
+        assert task["status"] == "in_progress"
+    finally:
+        await todo.close()
+
+
+@pytest.mark.asyncio
+async def test_parent_waits_for_subtasks_and_deleted_dep_unblocks(tmp_path):
+    todo = TodoLedger(str(tmp_path / "todo.db"))
+    await todo.init()
+    try:
+        parent = await todo.create_task("parent", {}, "0x1", "g", [])
+        sub1 = await todo.create_task("sub1", {}, "0x2", "g", [])
+        sub2 = await todo.create_task("sub2", {}, "0x3", "g", [])
+        await todo.add_dependencies(parent, [sub1, sub2])
+
+        ready_ids = {t["id"] for t in await todo.get_ready_tasks()}
+        assert sub1 in ready_ids and sub2 in ready_ids
+        assert parent not in ready_ids  # waits on its subtasks
+
+        # one subtask completes → parent still blocked on the other
+        await todo.complete_task(sub1)
+        assert parent not in {t["id"] for t in await todo.get_ready_tasks()}
+
+        # subtask deleted by the scheduler → missing dep counts as satisfied
+        await todo.delete_task(sub2)
+        assert parent in {t["id"] for t in await todo.get_ready_tasks()}
+    finally:
+        await todo.close()
+
+
+@pytest.mark.asyncio
+async def test_delete_task_removes_dependency_rows_both_directions(tmp_path):
+    todo = TodoLedger(str(tmp_path / "todo.db"))
+    await todo.init()
+    try:
+        a = await todo.create_task("a", {}, "0x1", "g", [])
+        b = await todo.create_task("b", {}, "0x2", "g", [])
+        c = await todo.create_task("c", {}, "0x3", "g", [])
+        await todo.add_dependencies(a, [b])  # a depends on b
+        await todo.add_dependencies(c, [a])  # c depends on a
+
+        # Deleting a (referenced by c, referencing b) must not FK-violate.
+        await todo.delete_task(a)
+
+        assert await todo._dependencies(c) == set()  # join rows cleaned
+        assert await todo._dependencies(b) == set()
+        assert b in {t["id"] for t in await todo.get_ready_tasks()}
+        assert c in {t["id"] for t in await todo.get_ready_tasks()}
     finally:
         await todo.close()
 

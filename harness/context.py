@@ -20,6 +20,7 @@ the pipeline.
 from __future__ import annotations
 
 import logging
+import re
 
 from reaper.tools.struct_detector import FieldAccess  # noqa: F401
 from reaper.tools.struct_detector import StructCandidate  # noqa: F401
@@ -124,7 +125,7 @@ class ContextAssembler:
         """
         var_name = str(var_id).split(":")[-1] if var_id else ""
         hl = self._hlil_text(func_address) or ""
-        highlighted = hl.replace(var_name, f">>> {var_name} <<<")
+        highlighted = self._highlight(var_name, hl, func_address)
         name = self._function_name(func_address)
 
         parts = [f"HLIL of function {name}:\n{highlighted}"]
@@ -376,6 +377,27 @@ class ContextAssembler:
             if tokens:
                 return tokens[-1]
         return str(addr)
+
+    @staticmethod
+    def _highlight(var_name: str, hl: str, func_address: str) -> str:
+        """Wrap every WORD-BOUNDED occurrence of ``var_name`` in >>> <<<.
+
+        A plain ``str.replace`` corrupts short names: renaming ``c`` would also
+        highlight the ``c`` inside ``calc``/``char``/``value``. We anchor the
+        match on C-identifier boundaries so only the standalone token is marked.
+        If the variable cannot be found (renamed in the live view), the HLIL is
+        returned untouched rather than producing a misleading highlight.
+        """
+        if not var_name or not hl:
+            return hl
+        pattern = rf"(?<![A-Za-z0-9_]){re.escape(var_name)}(?![A-Za-z0-9_])"
+        highlighted = re.sub(pattern, f">>> {var_name} <<<", hl)
+        if ">>>" in highlighted:
+            return highlighted
+        # The live Binja variable may already carry its renamed value, in which
+        # case the original id-based name has no occurrences. Fall back to the
+        # function-level anchor so the agent still has unambiguous direction.
+        return hl + f"\n(TARGET variable `{var_name}` for function {func_address})"
 
     def _safe_extractor_list(self, method, addr) -> list:
         try:

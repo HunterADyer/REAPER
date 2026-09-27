@@ -11,7 +11,12 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from reaper.harness.submission import ReviewOutput, get_schema, parse_response
+from reaper.harness.submission import (
+    ReviewOutput,
+    get_schema,  # noqa: F401  (kept for API parity)
+    parse_response,  # noqa: F401  (kept for API parity)
+    send_structured,
+)
 
 log = logging.getLogger(__name__)
 
@@ -31,23 +36,33 @@ class ReviewAgent:
     def _prompt_path() -> str:
         return str(Path(__file__).resolve().parent / "prompts" / "review_agent.txt")
 
-    async def run(self, func_address: str) -> ReviewOutput:
-        """Review one function and return renames + claims + tasks."""
+    async def run(self, func_address: str, prior_feedback: str = "") -> ReviewOutput:
+        """Review one function and return renames + claims + tasks.
+
+        ``prior_feedback`` is the critic's aggregated rejection feedback from a
+        previous attempt (design § 6.1 retry-with-feedback). When provided it
+        is appended to the context so the model can correct its submission.
+        """
         context = await self.context_asm.for_function(
             func_address, include_callees=True, include_claims=True
         )
+        if prior_feedback:
+            context += (
+                "\n\nPREVIOUS ATTEMPT WAS REJECTED BY THE CRITIC. "
+                "Fix the submission accordingly:\n" + prior_feedback
+            )
         session_id = f"review_{func_address}"
         try:
             await self.llm.create_session(session_id, self.prompt)
-            response = await self.llm.send(
+            result = await send_structured(
+                self.llm,
                 session_id,
                 context,
+                ReviewOutput,
                 thinking_level=self.config.get("thinking_levels", {}).get(
                     "pass2_review", "max"
                 ),
-                structured_output=get_schema(ReviewOutput),
             )
-            result = parse_response(ReviewOutput, response)
         finally:
             self.llm.destroy_session(session_id)
 

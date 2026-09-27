@@ -78,14 +78,15 @@ async def build_nodes(extractor, neo4j_driver) -> None:
             )
 
             # 2. Variables
-            for var in extractor.get_variables(meta["address"]):
+            for ordinal, var in enumerate(extractor.get_variables(meta["address"])):
                 var_id = f"{func_addr}:{var['name']}"
                 await session.run(
                     "MERGE (v:Variable {id: $id}) "
                     "SET v.name = $name, v.type = $type, "
-                    "v.address = $address, v.source = $source",
+                    "v.address = $address, v.source = $source, v.ordinal = $ordinal",
                     {"id": var_id, "name": var["name"], "type": var["type"],
-                     "address": func_addr, "source": var.get("source")},
+                     "address": func_addr, "source": var.get("source"),
+                     "ordinal": ordinal},
                 )
                 await session.run(
                     "MATCH (f:Function {address: $fa}), (v:Variable {id: $vid}) "
@@ -98,9 +99,10 @@ async def build_nodes(extractor, neo4j_driver) -> None:
                 arg_id = f"{func_addr}:arg{param['index']}"
                 await session.run(
                     "MERGE (a:Argument {id: $id}) "
-                    "SET a.name = $name, a.type = $type, a.address = $address",
+                    "SET a.name = $name, a.type = $type, a.address = $address, "
+                    "a.ordinal = $ordinal",
                     {"id": arg_id, "name": param["name"], "type": param["type"],
-                     "address": func_addr},
+                     "address": func_addr, "ordinal": param["index"]},
                 )
                 await session.run(
                     "MATCH (f:Function {address: $fa}), (a:Argument {id: $aid}) "

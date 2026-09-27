@@ -263,8 +263,12 @@ async def main() -> int:
                              "fields}} plus optional 'structs'")
     parser.add_argument("--llm", action="store_true",
                         help="use the LLM judge for semantic metrics")
-    parser.add_argument("--base-url", default="http://localhost:8010/v1")
-    parser.add_argument("--model", default="deepseek-ai/DeepSeek-V4-Flash-0731")
+    parser.add_argument("--base-url", default="http://localhost:8035/v1",
+                        help="vLLM OpenAI-compatible base URL (default matches "
+                             "the live shared vLLM endpoint)")
+    parser.add_argument("--model", default="deepseek",
+                        help="model name served by --base-url (default matches "
+                             "the live shared vLLM deployment)")
     args = parser.parse_args()
 
     ground_truth = await _load(args.ground_truth)

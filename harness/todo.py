@@ -33,15 +33,16 @@ CREATE TABLE IF NOT EXISTS tasks (
     critic_feedback TEXT,
     rejection_count INTEGER DEFAULT 0,
     created_at TEXT,
-    completed_at TEXT
+    completed_at TEXT,
+    started_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_dependencies (
     task_id INTEGER NOT NULL,
     depends_on INTEGER NOT NULL,
     PRIMARY KEY (task_id, depends_on),
-    FOREIGN KEY (task_id) REFERENCES tasks(id),
-    FOREIGN KEY (depends_on) REFERENCES tasks(id)
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    FOREIGN KEY (depends_on) REFERENCES tasks(id) ON DELETE CASCADE
 );
 """
 
@@ -62,13 +63,22 @@ class TodoLedger:
         self._write_lock: asyncio.Lock | None = None
 
     async def init(self) -> None:
-        """Open aiosqlite connection, set PRAGMAs, create tables."""
+        """Open aiosqlite connection, set PRAGMAs, create tables + migrate."""
         self._db = await aiosqlite.connect(self.db_path)
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA foreign_keys=ON")
         await self._db.executescript(_SCHEMA)
+        await self._migrate()
         await self._db.commit()
         self._write_lock = asyncio.Lock()
+
+    async def _migrate(self) -> None:
+        """Backfill columns added after first release (started_at). Existing
+        SQLite files created before the field existed must not crash on reads."""
+        cursor = await self._db.execute("PRAGMA table_info(tasks)")
+        cols = {r[1] for r in await cursor.fetchall()}
+        if "started_at" not in cols:
+            await self._db.execute("ALTER TABLE tasks ADD COLUMN started_at TEXT")
 
     async def close(self) -> None:
         if self._db is not None:
@@ -81,6 +91,7 @@ class TodoLedger:
 
     @staticmethod
     def _row_to_dict(row) -> dict:
+        started_at = row[12] if len(row) > 12 else None
         return {
             "id": row[0],
             "description": row[1],
@@ -94,6 +105,7 @@ class TodoLedger:
             "rejection_count": row[9],
             "created_at": row[10],
             "completed_at": row[11],
+            "started_at": started_at,
         }
 
     # -- writes ----------------------------------------------------------------
@@ -135,12 +147,14 @@ class TodoLedger:
             return task_id
 
     async def assign_task(self, task_id: int, session_id: str) -> None:
-        """Sets status to 'in_progress'. Acquires _write_lock."""
+        """Sets status to 'in_progress' and records started_at (stale clock).
+        Acquires _write_lock."""
         db = self._require_ready()
         async with self._write_lock:
             await db.execute(
-                "UPDATE tasks SET status = 'in_progress', assigned_to = ? WHERE id = ?",
-                (session_id, task_id),
+                "UPDATE tasks SET status = 'in_progress', assigned_to = ?, "
+                "started_at = ? WHERE id = ?",
+                (session_id, _now(), task_id),
             )
             await db.commit()
 
@@ -156,12 +170,14 @@ class TodoLedger:
 
     async def reject_task(self, task_id: int, feedback: str) -> int:
         """Return task to 'pending', set critic_feedback, increment
-        rejection_count. Returns the new count. Acquires _write_lock."""
+        rejection_count, clear the started_at stale clock. Returns the new
+        count. Acquires _write_lock."""
         db = self._require_ready()
         async with self._write_lock:
             await db.execute(
                 "UPDATE tasks SET status = 'pending', critic_feedback = ?, "
-                "rejection_count = rejection_count + 1 WHERE id = ?",
+                "rejection_count = rejection_count + 1, started_at = NULL "
+                "WHERE id = ?",
                 (feedback, task_id),
             )
             await db.commit()
@@ -172,7 +188,8 @@ class TodoLedger:
             return int(row[0]) if row else 0
 
     async def requeue_task(self, task_id: int, feedback: str = "") -> None:
-        """Return task to 'pending' WITHOUT bumping rejection_count.
+        """Return task to 'pending' WITHOUT bumping rejection_count, and clear
+        the started_at stale clock.
 
         Used by the investigation loop (7.3) to retry a task that spawned
         subtasks or whose claims were all rejected — counting that as a
@@ -182,15 +199,42 @@ class TodoLedger:
         async with self._write_lock:
             await db.execute(
                 "UPDATE tasks SET status = 'pending', assigned_to = NULL, "
-                "critic_feedback = ? WHERE id = ?",
+                "started_at = NULL, critic_feedback = ? WHERE id = ?",
                 (feedback, task_id),
             )
             await db.commit()
 
-    async def delete_task(self, task_id: int) -> None:
-        """Remove a merged-away task. Acquires _write_lock."""
+    async def add_dependencies(self, task_id: int, dep_ids: list[int]) -> None:
+        """Add dependencies to an EXISTING task (e.g. a parent now waiting on
+        the subtasks it spawned). Missing/deleted dep ids are simply ignored.
+        Acquires _write_lock."""
+        dep_ids = [int(d) for d in (dep_ids or []) if d is not None]
+        if not dep_ids:
+            return
         db = self._require_ready()
         async with self._write_lock:
+            for dep in dep_ids:
+                await db.execute(
+                    "INSERT OR IGNORE INTO task_dependencies (task_id, depends_on) "
+                    "VALUES (?, ?)",
+                    (int(task_id), dep),
+                )
+            await db.commit()
+
+    async def delete_task(self, task_id: int) -> None:
+        """Remove a merged-away task and any dependency rows referencing it.
+
+        Deleting a task that others depend on (or that depends on others)
+        must not hit an FK violation — with pragma foreign_keys=ON and without
+        ON DELETE CASCADE the join rows must be removed explicitly (this also
+        covers legacy DBs created before the CASCADE clause was added).
+        Acquires _write_lock."""
+        db = self._require_ready()
+        async with self._write_lock:
+            await db.execute(
+                "DELETE FROM task_dependencies WHERE task_id = ? OR depends_on = ?",
+                (task_id, task_id),
+            )
             await db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
             await db.commit()
 
@@ -219,7 +263,12 @@ class TodoLedger:
         return {r[0] for r in rows}
 
     async def get_ready_tasks(self) -> list[dict]:
-        """All 'pending' tasks whose dependencies are all 'completed'."""
+        """All 'pending' tasks whose dependencies are all 'completed'.
+
+        A dependency whose task no longer exists (merged away / deleted) counts
+        as satisfied — otherwise a parent whose subtask was deleted by the
+        scheduler would strand forever.
+        """
         tasks = await self._all_tasks()
         ready = []
         for t in tasks:
@@ -232,7 +281,9 @@ class TodoLedger:
             all_done = True
             for dep in deps:
                 dep_task = await self.get_task(dep)
-                if dep_task is None or dep_task["status"] != "completed":
+                if dep_task is None:
+                    continue  # deleted dep no longer blocks (missing = satisfied)
+                if dep_task["status"] != "completed":
                     all_done = False
                     break
             if all_done:
@@ -249,10 +300,12 @@ class TodoLedger:
         return [t for t in tasks if t["status"] == "pending"]
 
     async def reset_stale_in_progress(self, timeout_seconds: int) -> int:
-        """Reset in_progress tasks started more than ``timeout_seconds`` ago
-        back to pending (stale task check, design § 7.1). Returns the count of
-        tasks reset. Tasks whose timestamp cannot be parsed are treated as
-        stale (conservative — never strand an in_progress task forever).
+        """Reset in_progress tasks whose execution window (``started_at``, set
+        by ``assign_task`` — NOT ``created_at``, which is the queue-insertion
+        time) elapsed more than ``timeout_seconds`` ago, back to pending (stale
+        task check, design § 7.1). Returns the count of tasks reset. Tasks whose
+        timestamp cannot be parsed are treated as stale (conservative — never
+        strand an in_progress task forever).
         """
         tasks = await self._all_tasks()
         now = datetime.now(timezone.utc)
@@ -260,10 +313,11 @@ class TodoLedger:
         for t in tasks:
             if t["status"] != "in_progress":
                 continue
-            started_at = t.get("created_at") or ""
+            # The stale clock is the assignment time; created_at is only a
+            # fallback for rows written before started_at existed.
+            started_at = t.get("started_at") or t.get("created_at") or ""
             try:
-                started = datetime.fromisoformat(started_at
-                                                 .replace("Z", "+00:00"))
+                started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
                 if started.tzinfo is None:
                     started = started.replace(tzinfo=timezone.utc)
                 stale = (now - started).total_seconds() > int(timeout_seconds)
@@ -277,8 +331,8 @@ class TodoLedger:
         async with self._write_lock:
             for task_id in stale_ids:
                 await db.execute(
-                    "UPDATE tasks SET status = 'pending', assigned_to = NULL "
-                    "WHERE id = ?", (task_id,)
+                    "UPDATE tasks SET status = 'pending', assigned_to = NULL, "
+                    "started_at = NULL WHERE id = ?", (task_id,)
                 )
             await db.commit()
         return len(stale_ids)

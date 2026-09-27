@@ -20,7 +20,7 @@ import logging
 
 from pydantic import BaseModel, Field
 
-from reaper.harness.submission import get_schema, parse_response
+from reaper.harness.submission import get_schema, parse_response, send_structured  # noqa: F401
 
 log = logging.getLogger(__name__)
 
@@ -140,11 +140,10 @@ class Scheduler:
         session_id = "scheduler_batch"
         try:
             await self.llm.create_session(session_id, _SYSTEM_PROMPT)
-            response = await self.llm.send(
-                session_id, payload, thinking_level=self._thinking,
-                structured_output=get_schema(SchedulerPlan),
+            return await send_structured(
+                self.llm, session_id, payload, SchedulerPlan,
+                thinking_level=self._thinking,
             )
-            return parse_response(SchedulerPlan, response)
         finally:
             self.llm.destroy_session(session_id)
 

@@ -59,8 +59,10 @@ class StubLedger:
         self.updated = []
         self.deleted = []
         self.registered = 0
+        self.claim_scope = None  # records include_pinned passed by is_re_complete
 
-    async def all_functions_have_claims(self):
+    async def all_functions_have_claims(self, include_pinned=True):
+        self.claim_scope = include_pinned
         return self._has_claims
 
     async def update_claim_text(self, claim_id, new_text):
@@ -145,3 +147,13 @@ async def test_is_re_complete_requires_claims_on_all_functions_and_empty_todo():
 
     ledger._has_claims = True
     assert await is_re_complete(ledger, todo) is True
+
+
+@pytest.mark.asyncio
+async def test_is_re_complete_scopes_claims_to_renamable_functions():
+    """Completion must exclude pinned functions from the claim requirement —
+    they are given symbols, not discovered ones (design § 2.4)."""
+    ledger = StubLedger(has_claims=True)
+    todo = StubTodo(is_empty=True)
+    assert await is_re_complete(ledger, todo) is True
+    assert ledger.claim_scope is False  # include_pinned=False was requested

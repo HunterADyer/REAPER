@@ -16,19 +16,31 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+# Complete documented trace vocabulary. Logging an event outside this set no
+# longer raises — it is warned about and dropped (see `Tracer.log`), so a
+# mis-registered or future event can never crash a live pipeline run. The
+# entries below are the union of every event type currently emitted across
+# run.py, the harness dispatchers/loops, and the agents, plus the originally
+# reserved vocabulary.
 _ALLOWED_EVENT_TYPES = {
-    "llm_request",
-    "llm_response",
-    "claim_submit",
-    "critic_feedback",
-    "merge_attempt",
-    "merge_result",
-    "rename",
-    "task_create",
-    "task_complete",
-    "graph_mutation",
-    "pipeline_complete",
-    "investigation_stuck",
+    # run orchestrator
+    "pipeline_complete", "pipeline_phases_done",
+    # Pass 1 / Pass 2 dispatchers
+    "pass1_no_functions", "pass1_scc_done", "pass1_level_done",
+    "pass2_no_functions", "pass2_level_done", "pass2_review_retry",
+    "pass2_function_done",
+    # scheduler / resynthesis / investigation loops
+    "scheduler_reviewed", "scheduler_stale_reset", "scheduler_assigned",
+    "resynthesis_iteration", "resynthesis_agent", "completion_coverage",
+    "investigation_complete", "investigation_stuck",
+    "investigation_iteration_cap", "investigation_agent",
+    # Pass 1 rename / Pass 2 review / critic agents
+    "review_agent", "rename_agent",
+    "claim_accepted", "claim_force_accepted", "claim_rejected",
+    # reserved vocabulary (not currently emitted; documented for future wiring)
+    "llm_request", "llm_response", "claim_submit", "critic_feedback",
+    "merge_attempt", "merge_result", "rename",
+    "task_create", "task_complete", "graph_mutation",
 }
 
 
@@ -45,14 +57,18 @@ class Tracer:
     async def log(self, event_type: str, session_id: str, data: dict) -> None:
         """Append a JSON line to the trace log (locked, flushed immediately).
 
-        Raises:
-            ValueError: if ``event_type`` is not in :data:`_ALLOWED_EVENT_TYPES`.
+        Unknown ``event_type`` values are warned about and dropped rather than
+        raised — tracing must never take down a live run. Keep any new event
+        type in :data:`_ALLOWED_EVENT_TYPES` so the warning stays silent in
+        normal operation.
         """
         if event_type not in _ALLOWED_EVENT_TYPES:
-            raise ValueError(
-                f"unknown trace event type {event_type!r}; "
-                f"expected one of {sorted(_ALLOWED_EVENT_TYPES)}"
+            log.warning(
+                "dropping trace record for unknown event type %r — add it to "
+                "Tracer._ALLOWED_EVENT_TYPES (currently %d documented types)",
+                event_type, len(_ALLOWED_EVENT_TYPES),
             )
+            return
         record = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "event": event_type,

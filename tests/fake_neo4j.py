@@ -31,6 +31,7 @@ import re
 _PROP_KEYS = {
     "id", "address", "llm_name", "canon_name", "pinned", "ambiguous",
     "scc_id", "traversal_order", "isolated", "summary", "type", "value",
+    "ordinal", "source", "name",
 }
 
 

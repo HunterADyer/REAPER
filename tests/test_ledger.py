@@ -11,7 +11,7 @@ import pytest
 
 from reaper.harness.ledger import Ledger
 
-from conftest import FakeNeo4jDriver
+from conftest import FakeNeo4jDriver, RecordingNeo4jDriver
 
 
 @pytest.mark.asyncio
@@ -137,3 +137,105 @@ async def test_not_initialized_raises(tmp_path):
     ledger = Ledger(str(tmp_path / "db.db"), FakeNeo4jDriver([]))
     with pytest.raises(RuntimeError):
         await ledger.get_function("0x1")
+
+
+@pytest.mark.asyncio
+async def test_sweep_null_claims_deletes_unevaluated(tmp_path):
+    ledger = Ledger(str(tmp_path / "ledger.db"), FakeNeo4jDriver(["0x1400"]))
+    await ledger.init()
+    try:
+        await ledger.add_claim("0x1400", "unevaluated 1", "a",
+                               [{"address_start": "0x1400", "address_end": "0x1410",
+                                 "description": "d"}])
+        await ledger.add_claim("0x1400", "unevaluated 2", "a", [])
+        cid = await ledger.add_claim("0x1400", "evaluated", "a", [])
+        await ledger.set_truth_level(cid, "mid_confidence", "critic")
+
+        swept = await ledger.sweep_null_claims()
+        assert swept == 2
+        claims = await ledger.get_claims("0x1400")
+        assert len(claims) == 1
+        assert claims[0]["truth_level"] == "mid_confidence"
+        assert await ledger.sweep_null_claims() == 0  # idempotent
+    finally:
+        await ledger.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_coverage_stats_breakdown(tmp_path):
+    driver = FakeNeo4jDriver(["0x1400", "0x2000", "0x3000"])
+    ledger = Ledger(str(tmp_path / "ledger.db"), driver)
+    await ledger.init()
+    try:
+        c1 = await ledger.add_claim("0x1400", "solid", "a", [])
+        await ledger.set_truth_level(c1, "high_confidence", "critic")
+        c2 = await ledger.add_claim("0x2000", "guess", "a", [])
+        await ledger.set_truth_level(c2, "speculation", "critic")
+
+        stats = await ledger.claim_coverage_stats()
+        assert stats["total_graph_functions"] == 3
+        assert stats["renamable_functions"] == 3
+        assert stats["pinned_functions"] == 0
+        assert stats["with_claims"] == 2
+        assert stats["with_mid_confidence_or_above"] == 1
+        assert stats["speculation_only"] == 1
+        assert stats["no_claims"] == 1
+    finally:
+        await ledger.close()
+
+
+@pytest.mark.asyncio
+async def test_all_functions_have_claims_can_exclude_pinned(tmp_path):
+    def respond(query, params):
+        if "RETURN f.address AS address" in query:
+            if "pinned" in query:      # the non-pinned scope query
+                return [{"address": "0x2000"}]
+            return [{"address": "0x1000"}, {"address": "0x2000"}]
+        return []
+
+    driver = RecordingNeo4jDriver(respond)
+    ledger = Ledger(str(tmp_path / "ledger.db"), driver)
+    await ledger.init()
+    try:
+        await ledger.register_functions_from_graph()  # registers both
+        await ledger.add_claim("0x2000", "c", "a", [])
+        await ledger.set_truth_level(
+            (await ledger.get_claims("0x2000"))[0]["id"], "inferred", "critic"
+        )
+        # renamable scope is covered (pinned 0x1000 excluded)
+        assert await ledger.all_functions_have_claims(include_pinned=False) is True
+        # the default all-functions scope still sees the pinned gap
+        assert await ledger.all_functions_have_claims() is False
+    finally:
+        await ledger.close()
+
+
+@pytest.mark.asyncio
+async def test_record_and_get_structs(tmp_path):
+    from reaper.harness.submission import StructDefinition, StructField
+    ledger = Ledger(str(tmp_path / "ledger.db"), FakeNeo4jDriver([]))
+    await ledger.init()
+    try:
+        sd = StructDefinition(struct_name="cJSON", fields=[
+            StructField(offset=0, name="next", type_str="struct cJSON*", size=8,
+                        confidence="high_confidence"),
+            StructField(offset=8, name="prev", type_str="struct cJSON*", size=8,
+                        confidence="high_confidence"),
+        ])
+        await ledger.record_struct(sd)
+        structs = await ledger.get_structs()
+        assert set(structs) == {"cJSON"}
+        assert len(structs["cJSON"]) == 2
+        assert structs["cJSON"][0]["offset"] == 0
+        assert structs["cJSON"][0]["size"] == 8
+        assert structs["cJSON"][0]["confidence"] == "high_confidence"
+
+        # Re-recording the same struct name REPLACES its fields (idempotent).
+        sd2 = StructDefinition(struct_name="cJSON", fields=[
+            StructField(offset=0, name="only", type_str="int", size=4,
+                        confidence="inferred"),
+        ])
+        await ledger.record_struct(sd2)
+        assert len((await ledger.get_structs())["cJSON"]) == 1
+    finally:
+        await ledger.close()

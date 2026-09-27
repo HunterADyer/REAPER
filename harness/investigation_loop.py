@@ -15,7 +15,10 @@ Completion flow (design § 7.2, implemented deadlock-free):
 
 Stuck detection (design § 7.3): an iteration that assigns nothing, with
 nothing in_progress and a non-empty ledger, logs ``investigation_stuck`` and
-returns False. Returns True only when the ledger is fully drained.
+returns False. Bounded: ``limits.max_investigation_iterations`` (default 200)
+caps the loop so a model that keeps spawning subtasks can never livelock —
+after the cap it logs ``investigation_iteration_cap`` and reports the current
+drain state. Returns True only when the ledger is fully drained.
 """
 
 from __future__ import annotations
@@ -51,11 +54,18 @@ class InvestigationLoop:
         self.config = config or {}
         limits = self.config.get("limits") or {}
         self._max_concurrent = int(limits.get("max_concurrent_agents", 8))
+        self._max_iterations = int(limits.get("max_investigation_iterations", 200))
         self.critic = CriticEvaluator(llm_client, context_asm, ledger, tracer, config)
 
     async def run(self) -> bool:
-        """Drain the TODO ledger; returns True iff all tasks completed."""
-        while True:
+        """Drain the TODO ledger; returns True iff all tasks completed.
+
+        Bounded by ``limits.max_investigation_iterations`` so a model that
+        keeps spawning subtasks can never livelock the pipeline — after the cap
+        we log ``investigation_iteration_cap`` and report the current state
+        instead of looping forever.
+        """
+        for _iteration in range(self._max_iterations):
             try:
                 await self.scheduler.review_pending_tasks()
             except Exception:
@@ -86,6 +96,11 @@ class InvestigationLoop:
             # Nothing dispatched AND nothing in progress → stuck.
             await self._log("investigation_stuck", {})
             return False
+        await self._log(
+            "investigation_iteration_cap",
+            {"max_iterations": self._max_iterations},
+        )
+        return await self.todo.is_empty()
 
     async def _handle_result(self, task: dict, result) -> None:
         task_id = task.get("id")
@@ -113,21 +128,36 @@ class InvestigationLoop:
                 log.exception("investigation loop: critic failed for claim %s", claim_id)
 
         if result.subtasks:
+            subtask_ids: list[int] = []
             for tspec in result.subtasks:
                 try:
                     spec = tspec.context_spec
                     context_spec = (spec.model_dump() if hasattr(spec, "model_dump")
                                     else dict(spec or {}))
-                    await self.todo.create_task(
+                    created = await self.todo.create_task(
                         description=tspec.description,
                         context_spec=context_spec,
                         start_position=tspec.start_position,
                         goal=tspec.goal,
                         graph_refs=list(tspec.graph_refs or []),
                     )
+                    if created is not None:
+                        subtask_ids.append(created)
                 except Exception:
                     log.exception("investigation loop: create subtask failed")
-            await self._requeue(task_id, "subtasks spawned — will retry later")
+            # Real parent->subtask dependency (design § 7.2/7.3): the parent is
+            # NOT retried until its subtasks complete. This removes the
+            # premature-redispatch livelock — subtasks do NOT depend on the
+            # parent, so there is no mutual-dependency deadlock.
+            add_deps = getattr(self.todo, "add_dependencies", None)
+            if task_id is not None and subtask_ids and add_deps is not None:
+                try:
+                    await add_deps(task_id, subtask_ids)
+                except Exception:
+                    log.exception("investigation loop: add_dependencies failed")
+            await self._requeue(
+                task_id, "subtasks spawned — retry after they complete"
+            )
             return
 
         if accepted_claims == 0 and result.claims:

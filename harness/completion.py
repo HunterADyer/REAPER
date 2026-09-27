@@ -24,9 +24,16 @@ log = logging.getLogger(__name__)
 
 
 async def is_re_complete(ledger, todo) -> bool:
-    """Pipeline completion: every function has claims AND the TODO is empty."""
+    """Pipeline completion: every RENAMABLE function has claims AND the TODO is
+    empty.
+
+    Pinned functions (imports/library/named symbols) are given, not discovered,
+    so they are intentionally excluded from the claim requirement — otherwise
+    completion would be blocked by functions nobody was asked to investigate.
+    Use ``ledger.claim_coverage_stats()`` for a partial-credit breakdown.
+    """
     try:
-        has_claims = await ledger.all_functions_have_claims()
+        has_claims = await ledger.all_functions_have_claims(include_pinned=False)
     except Exception:
         log.exception("is_re_complete: all_functions_have_claims failed")
         has_claims = False
@@ -98,6 +105,15 @@ class ResynthesisLoop:
             await self.ledger.register_functions_from_graph()
         except Exception:
             log.exception("resynthesis loop: register_functions_from_graph failed")
+        # Partial-credit visibility: report the claim-coverage breakdown instead
+        # of hiding it behind a single boolean (design § 8.3 metric 4).
+        try:
+            stats = await self.ledger.claim_coverage_stats()  # type: ignore[attr-defined]
+        except Exception:
+            log.debug("resynthesis loop: claim_coverage_stats unavailable")
+            stats = {}
+        if stats:
+            await self._log("completion_coverage", stats)
         return await is_re_complete(self.ledger, self.todo)
 
     async def _create_task(self, tspec) -> None:

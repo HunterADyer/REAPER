@@ -98,6 +98,27 @@ async def test_for_variable_highlights_target():
 
 
 @pytest.mark.asyncio
+async def test_for_variable_highlight_is_word_boundary_aware():
+    """A short variable name must not corrupt bigger identifiers: renaming `c`
+    must highlight only standalone `c` tokens, never the `c` inside `char`,
+    `calc`, etc. (regression for the old hl.replace bug)."""
+    extractor = ScriptedExtractor(
+        hlils={"0x3000": (
+            "0x3000: c = char(0x41)\n"
+            "0x3010: calc = c + 1\n"
+            "0x3020: if (c == 0) return c\n"
+        )},
+        variables={"0x3000": [{"name": "c", "type": "int"}]},
+    )
+    ca = ContextAssembler(extractor, _driver(), StubLedger(),
+                          {"limits": {"max_context_tokens": 32768}})
+    text = await ca.for_variable("0x3000", "0x3000:c")
+    assert text.count(">>> c <<<") == 4      # only the standalone tokens
+    assert "char(0x41)" in text              # not ">>> char <<<"
+    assert "calc = >>> c <<< + 1" in text       # calc identifier untouched
+
+
+@pytest.mark.asyncio
 async def test_for_struct_candidate_groups_by_function():
     ca, _ = _assembler()
     candidate = StructCandidate(

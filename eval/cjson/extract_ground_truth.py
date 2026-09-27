@@ -23,6 +23,86 @@ STRIPPED_BINARY = os.path.join(HERE, "cjson_test")
 OUT_PATH = os.path.join(HERE, "ground_truth.json")
 
 
+def _struct_layouts(bv) -> dict:
+    """Metric-5 ground truth — named structs referenced by the binary's code.
+
+    Audit 2026-09-27: the extractor only produced function name/params/locals,
+    so type-recovery accuracy (metric 5) had NO ground truth and the evaluator
+    could never score it. This walks every function's parameter + local
+    variable types, resolves pointers to the underlying structure type, and
+    records real member offsets + sizes from the (DWARF-enriched) unstripped
+    view. Structures the binary's own code never references are omitted on
+    purpose, which keeps libc noise (FILE, tm, ...) out of the score.
+
+    Sizes deliberately mirror StructAccessDetector._type_size's x86-64
+    assumption (pointers => 8) when a member's resolved width is unknown, so
+    REAPER's inferred sizes are compared apples-to-apples on the only target we
+    currently handle (x86-64). Extracted schemas land under the top-level
+    ``"structs"`` key, matching what evaluate.metric_5 reads.
+    """
+    import binaryninja
+
+    TypeClass = binaryninja.TypeClass
+    layouts: dict[str, list[dict]] = {}
+
+    def _structure_of(t):
+        depth = 0
+        while t is not None and depth < 8:
+            tc = getattr(t, "type_class", None)
+            if tc == TypeClass.PointerTypeClass:
+                t = getattr(t, "target", None)
+            elif tc == TypeClass.StructureTypeClass:
+                return t
+            else:
+                return None
+            depth += 1
+        return None
+
+    def _record(t) -> None:
+        st = _structure_of(t)
+        if st is None:
+            return
+        name = str(getattr(st, "name", "") or "").strip()
+        for prefix in ("struct ", "union ", "enum "):
+            if name.startswith(prefix):
+                name = name[len(prefix):].strip()
+        # Skip libc / implementation internals the LLM would never be asked to
+        # recover (underscore-prefixed or ALLCAPS aliases e.g. FILE, _IO_FILE).
+        if not name or name.startswith("_") or name.isupper():
+            return
+        members = [m for m in (getattr(st, "members", None) or []) if m]
+        if not members:
+            return
+        rows: list[dict] = []
+        for m in members:
+            try:
+                field_type = getattr(m, "type", None)
+                tc = getattr(field_type, "type_class", None)
+                size = int(getattr(field_type, "width", 0) or 0)
+                if size <= 0:
+                    size = 8 if tc == TypeClass.PointerTypeClass else 0
+                rows.append({
+                    "offset": int(getattr(m, "offset", 0) or 0),
+                    "size": size,
+                    "name": str(getattr(m, "name", "") or ""),
+                    "type_str": str(field_type),
+                })
+            except Exception:
+                continue
+        if rows and name not in layouts:
+            layouts[name] = rows
+
+    # Never crash the whole extraction because of a type-API quirk.
+    try:
+        for func in bv.functions:
+            for v in list(getattr(func, "parameter_vars", None) or []) + \
+                      list(getattr(func, "vars", None) or []):
+                _record(getattr(v, "type", None))
+    except Exception:
+        return {}
+    return layouts
+
+
 def extract() -> dict:
     import binaryninja  # may raise ImportError when Binja is absent
 
@@ -51,6 +131,7 @@ def extract() -> dict:
             "parameters": params,
             "local_variables": locals_,
         }
+    ground_truth["structs"] = _struct_layouts(sym_bv)
     return ground_truth
 
 
@@ -67,7 +148,12 @@ def main() -> int:
         ground_truth = {}
     with open(OUT_PATH, "w", encoding="utf-8") as fh:
         json.dump(ground_truth, fh, indent=2)
-    print(f"Extracted {len(ground_truth)} functions -> {OUT_PATH}")
+    n_funcs = sum(
+        1 for v in ground_truth.values()
+        if isinstance(v, dict) and "function_name" in v
+    )
+    n_structs = len(ground_truth.get("structs") or {})
+    print(f"Extracted {n_funcs} functions + {n_structs} structs -> {OUT_PATH}")
     return 0
 
 

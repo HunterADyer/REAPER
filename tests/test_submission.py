@@ -30,7 +30,10 @@ from reaper.harness.submission import (
     TaskSpec,
     get_schema,
     parse_response,
+    send_structured,
 )
+
+from fake_harness import StubLLM
 
 _MODELS = [
     Rename,
@@ -217,4 +220,33 @@ def test_parse_response_surrounding_noise():
 def test_parse_response_malformed_raises():
     with pytest.raises(ValidationError):
         parse_response(CriticVerdict, "this is not json at all")
+
+
+@pytest.mark.asyncio
+async def test_send_structured_retries_once_on_invalid_output():
+    """A malformed/truncated structured response must be retried automatically:
+    a single retry of the same session is cheap and removes most silent partial
+    parse failures (the NULL-claim orphan root cause)."""
+    llm = StubLLM(responses=[
+        "not json at all",                              # first attempt → bad
+        json.dumps({"truth_level": "high_confidence",
+                    "accepted": True, "feedback": "ok"}),  # retry → valid
+    ])
+    verdict = await send_structured(
+        llm, "critic_1", "CLAIM: ...",
+        CriticVerdict, thinking_level="low",
+    )
+    assert verdict.accepted is True
+    assert verdict.truth_level == "high_confidence"
+    sends = [c for c in llm.calls if c["op"] == "send"]
+    assert len(sends) == 2  # exactly one automatic retry
+
+
+@pytest.mark.asyncio
+async def test_send_structured_raises_after_all_attempts_fail():
+    llm = StubLLM(responses=["garbage", "also garbage"])
+    with pytest.raises(ValidationError):
+        await send_structured(
+            llm, "critic_2", "CLAIM: ...", CriticVerdict, thinking_level="low"
+        )
 

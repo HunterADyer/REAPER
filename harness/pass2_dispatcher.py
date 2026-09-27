@@ -9,12 +9,16 @@ Per function (parallel):
   a. Review agent reads master graph/ledger directly (read-only).
   b. Review agent → ReviewOutput (renames + claims + tasks).
   c. Claims → ledger (truth_level=NULL) → critic → accept/reject; rejected
-     claims are deleted by the critic and never reach merge.
-  d. Tasks → light critic review (atomic? goal concrete?) → TodoLedger.
-  e. Renames → ONLY when the review "passed" (the function had no claims, or
-     at least one claim was accepted) → merge_agent.attempt_merge. Claims are
-     intentionally excluded from the merge Submission because they were
-     already written to the ledger in step (c) — avoiding double-insertion.
+     claims are deleted by the critic so the next attempt starts clean.
+  d. Retry-with-feedback (design § 6.1): if a review produced claims and ALL
+     were rejected, the review agent is re-invoked with the critic's feedback
+     (capped by ``limits.max_review_retries``) instead of silently giving up.
+  e. Tasks → light critic review (atomic? goal concrete?) → TodoLedger.
+  f. Renames → merge_agent.attempt_merge. Rename merging is DELIBERATELY
+     decoupled from claim acceptance: a rejected review still contributes its
+     (independent, merge-agent-verified) renames. Claims are intentionally
+     excluded from the merge Submission because they were already written to
+     the ledger in step (c) — avoiding double-insertion.
 """
 
 from __future__ import annotations
@@ -28,8 +32,7 @@ from reaper.agents.review_agent import ReviewAgent
 from reaper.harness.submission import (
     CriticVerdict,
     Submission,
-    get_schema,
-    parse_response,
+    send_structured,
 )
 
 log = logging.getLogger(__name__)
@@ -96,33 +99,72 @@ class Pass2Dispatcher:
     async def _process_function(self, func_addr: str) -> None:
         async with self._semaphore:
             try:
-                review = await self.review_agent.run(func_addr)
+                max_retries = int(
+                    (self.config.get("limits") or {}).get("max_review_retries", 2)
+                )
+                feedback = ""
+                accepted_claims: list = []
+                last_renames: list = []
+                retries = 0
+                task_count = 0
+                attempts_done = 0
 
-                accepted_claims = []
-                for claim in review.claims:
-                    try:
-                        claim_id = await self.ledger.add_claim(
-                            claim.function_address, claim.claim_text,
-                            f"pass2:{func_addr}",
-                            [e.model_dump() for e in claim.evidence],
-                        )
-                    except Exception:
-                        log.exception("pass2: add_claim failed for %s", func_addr)
-                        continue
-                    outcome = await self.critic.evaluate_claim(
-                        claim_id, claim, func_addr, "review_agent"
+                for attempt in range(max_retries + 1):
+                    attempts_done = attempt + 1
+                    review = await self.review_agent.run(func_addr, feedback)
+                    last_renames = review.renames
+                    outcomes = []
+                    for claim in review.claims:
+                        try:
+                            claim_id = await self.ledger.add_claim(
+                                claim.function_address, claim.claim_text,
+                                f"pass2:{func_addr}",
+                                [e.model_dump() for e in claim.evidence],
+                            )
+                        except Exception:
+                            log.exception("pass2: add_claim failed for %s", func_addr)
+                            continue
+                        try:
+                            outcome = await self.critic.evaluate_claim(
+                                claim_id, claim, func_addr, "review_agent"
+                            )
+                        except Exception:
+                            log.exception("pass2: critic failed for %s", func_addr)
+                            continue
+                        outcomes.append(outcome)
+                        if outcome.accepted:
+                            accepted_claims.append(claim)
+
+                    for tspec in review.tasks:
+                        try:
+                            if await self._task_ok(tspec, func_addr):
+                                await self._create_task(tspec)
+                                task_count += 1
+                        except Exception:
+                            log.exception("pass2: task review failed for %s", func_addr)
+
+                    if not review.claims or any(o.accepted for o in outcomes):
+                        break  # nothing to retry, or at least one claim accepted
+
+                    if attempt >= max_retries:
+                        break  # retry budget exhausted — proceed anyway
+
+                    # Attempts with all claims rejected are retried with feedback.
+                    retries += 1
+                    feedback = "\n".join(
+                        f"- {o.feedback}" for o in outcomes if o.feedback
+                    ) or "All claims rejected; submit fewer, higher-evidence claims."
+                    await self._log(
+                        "pass2_review_retry",
+                        {"func_addr": func_addr, "attempt": attempt + 1,
+                         "feedback": feedback},
                     )
-                    if outcome.accepted:
-                        accepted_claims.append(claim)
 
-                for tspec in review.tasks:
-                    if await self._task_ok(tspec, func_addr):
-                        await self._create_task(tspec)
-
-                # Renames are merged only if the review "passed" (no claims, or
-                # at least one accepted claim); claims intentionally excluded.
-                if review.renames and (not review.claims or accepted_claims):
-                    submission = Submission(renames=review.renames, claims=[])
+                # Rename merging is decoupled from claim acceptance: a rejected
+                # review's renames are independent, merge-agent-verified work and
+                # are still merged (individually conflict-checked by the agent).
+                if last_renames:
+                    submission = Submission(renames=last_renames, claims=[])
                     await self.merge_agent.attempt_merge(
                         f"pass2_{func_addr}", submission
                     )
@@ -130,10 +172,11 @@ class Pass2Dispatcher:
                 await self._log(
                     "pass2_function_done", {
                         "func_addr": func_addr,
-                        "claims": len(review.claims),
+                        "review_attempts": attempts_done,
+                        "retries": retries,
                         "accepted_claims": len(accepted_claims),
-                        "renames": len(review.renames),
-                        "tasks": len(review.tasks),
+                        "renames": len(last_renames),
+                        "tasks_created": task_count,
                     },
                 )
             except Exception:
@@ -152,15 +195,15 @@ class Pass2Dispatcher:
         session_id = f"task_critic_{func_addr}_{tspec.start_position}"
         try:
             await self.llm.create_session(session_id, self.task_prompt)
-            response = await self.llm.send(
+            verdict = await send_structured(
+                self.llm,
                 session_id,
                 payload,
+                CriticVerdict,
                 thinking_level=self.config.get("thinking_levels", {}).get(
                     "pass2_review", "max"
                 ),
-                structured_output=get_schema(CriticVerdict),
             )
-            verdict = parse_response(CriticVerdict, response)
         finally:
             self.llm.destroy_session(session_id)
         return bool(verdict.accepted)
