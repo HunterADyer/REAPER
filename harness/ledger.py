@@ -13,8 +13,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 import aiosqlite
+
+from reaper.harness.events import bus, emit_sync
 
 log = logging.getLogger(__name__)
 
@@ -99,9 +102,24 @@ class Ledger:
         self._db = await aiosqlite.connect(self.db_path)
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA foreign_keys=ON")
+        try:
+            await self._db.set_trace_callback(self._sql_trace)
+        except Exception:  # noqa: BLE001 - introspection must never block init
+            pass
         await self._db.executescript(_SCHEMA)
         await self._db.commit()
         self._write_lock = asyncio.Lock()
+
+    def _sql_trace(self, sql: str) -> None:
+        """Emit every ledger SQL statement as a live event (debug / RL trace).
+
+        No-op when nothing is subscribed; never raises into the pipeline."""
+        if not bus.has_subscribers:
+            return
+        try:
+            emit_sync("sql.access", f"ledger:{Path(self.db_path).name}", {"sql": sql})
+        except Exception:  # noqa: BLE001
+            log.debug("ledger sql trace failed", exc_info=True)
 
     async def close(self) -> None:
         if self._db is not None:

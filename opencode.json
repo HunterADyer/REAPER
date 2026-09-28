@@ -1,0 +1,75 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "deepseek": {
+      "models": {
+        "deepseek": {
+          "variants": {
+            "minimal": { "reasoningEffort": "minimal" },
+            "low": { "reasoningEffort": "low" },
+            "medium": { "reasoningEffort": "medium" },
+            "high": { "reasoningEffort": "high" },
+            "xhigh": { "reasoningEffort": "xhigh" }
+          },
+          "options": { "reasoningEffort": "xhigh" }
+        }
+      }
+    }
+  },
+  "permission": {
+    "edit": "allow",
+    "bash": {
+      "*": "ask",
+      "ls": "allow",
+      "ls *": "allow",
+      "cat *": "allow",
+      "head *": "allow",
+      "tail *": "allow",
+      "find *": "allow",
+      "grep *": "allow",
+      "rg *": "allow",
+      "wc *": "allow",
+      "du *": "allow",
+      "df *": "allow",
+      "echo *": "allow",
+      "env": "allow",
+      "export *": "allow",
+      "source *": "allow",
+      "date": "allow",
+      "pwd": "allow",
+      "which *": "allow",
+      "file *": "allow",
+      "sleep *": "allow",
+      "touch *": "allow",
+      "mkdir -p *": "allow",
+      "mkdir *": "allow",
+      "cp *": "allow",
+      "mv *": "allow",
+      "ln -s *": "allow",
+      "python": "allow",
+      "python *": "allow",
+      "python3": "allow",
+      "python3 *": "allow",
+      "pip *": "allow",
+      "pytest": "allow",
+      "pytest *": "allow",
+      "git *": "allow",
+      "docker ps *": "allow",
+      "docker compose ps *": "allow",
+      "docker compose up *": "allow",
+      "docker compose down *": "allow",
+      "docker restart *": "allow",
+      "curl *": "allow",
+      "wget *": "allow",
+      "timeout *": "allow",
+      "nohup *": "allow",
+      "rm": "ask",
+      "rm *": "ask",
+      "kill *": "ask"
+    },
+    "task": "allow",
+    "todowrite": "allow",
+    "webfetch": "allow",
+    "question": "allow"
+  }
+}

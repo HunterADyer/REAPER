@@ -26,7 +26,9 @@ SYM_BINARY = "/home/police/reaper/eval/cjson/cjson_test_symbols"
 
 sys.path.insert(0, "/home/police/reaper")
 
-from reaper.tools._compat import BINJA_AVAILABLE, require_binja  # noqa: E402
+from reaper.tools._compat import (  # noqa: E402
+    BINJA_AVAILABLE, open_view as _open_view, require_binja,
+)
 
 if not BINJA_AVAILABLE:
     print(f"FATAL: `import binaryninja` failed. PYTHONPATH should point at the "
@@ -42,7 +44,7 @@ if not os.path.exists(BINARY):
     sys.exit(1)
 
 print(f"[2] open_view({BINARY}) [full analysis, may take a few seconds] ...")
-bv = binaryninja.open_view(BINARY)
+bv = _open_view(BINARY)
 if bv is None:
     print("FATAL: open_view returned None (license not valid?)")
     sys.exit(1)
@@ -78,7 +80,7 @@ if sample_func is not None:
 # --- [4] ground-truth address alignment -------------------------------------
 print(f"[4] sym/stripped alignment check ...")
 if os.path.exists(SYM_BINARY):
-    bv_sym = binaryninja.open_view(SYM_BINARY)
+    bv_sym = _open_view(SYM_BINARY)
     sym_starts = {hex(f.start) for f in bv_sym.functions if not f.name.startswith("_")}
     stripped_starts = {hex(f.start) for f in bv.functions}
     shared = len(sym_starts & stripped_starts)

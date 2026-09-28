@@ -94,7 +94,12 @@ def _children(expr):
         cond = getattr(expr, "condition", None)
         return [cond] if cond is not None else []
     operands = getattr(expr, "operands", None)
-    return [c for c in _safe_list(operands) if c is not None]
+    out = []
+    for item in _safe_list(operands):
+        for c in (item if isinstance(item, (list, tuple)) else [item]):
+            if c is not None and hasattr(c, "operation"):
+                out.append(c)
+    return out
 
 
 def _collect_variable_ids(expr, func_addr: str, param_map=None) -> set:

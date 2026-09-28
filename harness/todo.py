@@ -14,8 +14,11 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 import aiosqlite
+
+from reaper.harness.events import bus, emit_sync
 
 log = logging.getLogger(__name__)
 
@@ -67,10 +70,22 @@ class TodoLedger:
         self._db = await aiosqlite.connect(self.db_path)
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA foreign_keys=ON")
+        try:
+            await self._db.set_trace_callback(self._sql_trace)
+        except Exception:  # noqa: BLE001
+            pass
         await self._db.executescript(_SCHEMA)
         await self._migrate()
         await self._db.commit()
         self._write_lock = asyncio.Lock()
+
+    def _sql_trace(self, sql: str) -> None:
+        if not bus.has_subscribers:
+            return
+        try:
+            emit_sync("sql.access", f"todo:{Path(self.db_path).name}", {"sql": sql})
+        except Exception:  # noqa: BLE001
+            log.debug("todo sql trace failed", exc_info=True)
 
     async def _migrate(self) -> None:
         """Backfill columns added after first release (started_at). Existing

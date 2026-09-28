@@ -72,14 +72,16 @@ async def test_leaf_validation_passes_and_entry_function_allowed():
 
 
 @pytest.mark.asyncio
-async def test_bad_call_leaf_raises_leaf_validation_error():
-    bad = [{"labels": ["Call"], "address": "0x1010", "ambiguous": False,
-            "pinned": False, "id": "0x1000:call_0x1010"}]
+async def test_resolved_call_leaf_allowed():
+    """A resolved (ambiguous=false) Call leaf is legitimate: Call nodes carry
+    outgoing :CALL + incoming :CONTAINS but never an incoming dataflow edge,
+    so they are always leaves and must not fail validation."""
+    call_leaf = [{"labels": ["Call"], "address": "0x1010", "ambiguous": False,
+                  "pinned": False, "id": "0x1000:call_0x1010"}]
     driver = RecordingNeo4jDriver(analysis_responder(
-        leaves=[*_CLEAN_LEAVES, *bad], functions=_CLEAN_FUNCTIONS,
+        leaves=[*_CLEAN_LEAVES, *call_leaf], functions=_CLEAN_FUNCTIONS,
         call_edges=_CLEAN_CALL_EDGES, contains=_CLEAN_CONTAINS))
-    with pytest.raises(ValueError, match="Leaf validation failed"):
-        await validate_and_order(driver)
+    await validate_and_order(driver)  # must not raise
 
 
 @pytest.mark.asyncio

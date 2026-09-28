@@ -1,10 +1,71 @@
 # REAPER — Engineering Audit & Session Handoff
 
 **Status:** Implementation COMPLETE — all 28 deliverables across phases 1–8 are implemented and its
-unit suite is green (160 passed). **Live blocker:** Binary Ninja headless (Linux) is NOT installed, so
-Phase-2 graph build + 8.1 ground-truth extraction cannot run live yet. Everything LLM-side is written
-and unit-tested but has NOT been executed end-to-end against a real binary.
+unit suite is green (**204 passed**). Live facts 2026-09-27: Binja 6.0.10601 IS installed (valid
+license) and the full stack now runs against real Binja + Neo4j + vLLM (see handoff below).
 **Rev date:** 2026-09-27.
+
+---
+
+## ⚡ SESSION HANDOFF — 2026-09-27 (telemetry + GUI + live run — READ FIRST)
+
+**Short version for resuming:** a live `cjson_001` run is IN PROGRESS right now, hosted by a DETACHED
+Run Cockpit on http://127.0.0.1:8000. Do NOT start a second run; monitor/fix/tune the live one. All
+work is designed to be stop/resume-safe (state persists in Neo4j + SQLite + JSONL; the GUI daemon can
+be stopped/restarted without losing the run if needed).
+
+**How to check on the run (no browser needed):**
+```bash
+curl -s http://127.0.0.1:8000/api/state     # run status / phases / error
+curl -s "http://127.0.0.1:8000/api/events?after=0&limit=20"   # recent events
+curl -s http://127.0.0.1:8000/api/loops     # live counters vs caps
+tail -f data/cjson_001_events.jsonl         # debug firehose
+tail -f data/cjson_001_rltrace.jsonl        # LLM turns incl. reasoning (RL corpus)
+```
+GUI daemon control: `python -m reaper.gui.main --status | --stop` (start again with `--detach`).
+
+**What this session built/changed (all green, 204 tests):**
+1. **Fixed 5 live-blocking bugs** (repo was previously unrunnable against real deps; mocks had
+   diverged): Binja enum drift + `open_view`→`load` (tools/_compat.py, hlil_extract, GT extractor,
+   smoke_binja); non-expression HLIL operands guard (walk_expr/_children); invalid Neo4j 5 GQL
+   `WHERE NOT`-pattern (graph_analysis._LEAF_QUERY); inverted Call-leaf validation. Phase 2 verified
+   live: real graph (124 fn, dataflow/call edges, traversal order). Ground truth regenerated (101 fn).
+2. **Telemetry layer (new):** `harness/events.py` (EventBus + emit/emit_sync), `rltrace.py`
+   (per-LLM-turn RL corpus incl. **reasoning/thinking**), `debugtrace.py` (full event firehose),
+   `tracedriver.py` (every Neo4j query), SQLite trace callbacks (ledger/todo), extractor access
+   records, Tracer→bus mirror, LLM client captures `message.reasoning` + per-level timeouts (120s→
+   up to 900s; THE fix for the earlier type-recovery ReadTimeout). Design doc: docs/skills/telemetry.md.
+3. **GUI "Run Cockpit" (new, gui/):** FastAPI+WebSocket, hosts the run in-process, detached daemon
+   CLI (--detach/--stop/--status), REST pull APIs (/api/state, /api/events, /api/functions, /api/edges,
+   /api/claims, /api/tasks, /api/loops, /api/run/start|stop), static frontend (Rename Board, Active
+   Dialogues incl. reasoning, side drawers: Claims&Tasks / Call Graph / LLM Health / Trace Feed /
+   Loops & Limits). Run: `PYTHONPATH=$HOME/binja/binaryninja/python ~/reaper-venv/bin/python -m reaper.gui.main --detach`.
+4. **Scoring harness (new):** `eval/llm_score.py` — LLM judge with explicit rubric scoring ORIGINAL↔
+   recovered names, averaged over N independent runs (default 5), resumable cache, strict one request
+   at a time. Unit-tested (tests/test_llm_score.py). NOT YET RUN (waiting on the live run to produce
+   reaper_output). Command in telemetry.md §10.
+5. **GPU guard:** `llm_max_concurrent=1` — strictly ONE LLM request at a time (user requirement;
+   justified in telemetry.md §7 limits register).
+6. **opencode.json** added with TWO purposes:
+   - Permission rules: auto-approves routine dev commands (Python/pytest/git/curl/docker edge), still
+     asks on rm/kill. Requires opencode RESTART to take effect.
+   - DeepSeek reasoning variants: per-model `options.reasoningEffort` + `variants` minimal→xhigh for
+     provider `deepseek`/model `deepseek` (defaults to xhigh). Also requires restart. If provider id
+     differs in the user's setup, rename the key.
+7. **REAPER "xhigh" reasoning tier (new):** added to harness — `_THINKING_BUDGETS["xhigh"]=81920`,
+   timeout 1500s, and sends `chat_template_kwargs={"reasoning_effort":"high"}` (verified accepted by
+   the live :8035 vLLM). `configs/default.toml [thinking_levels] recovery_followup = "xhigh"`. This is
+   the harness-side lever; opencode's own model is a separate consumer (see #6).
+
+**Recommended next actions (order):**
+1. While run continues: watch counters; if Phase 4+ degrade, tune via configs/default.toml (all caps
+   justified + live-observable). Do NOT remove llm_max_concurrent guard.
+2. When status == complete: `eval/llm_score.py` (5 runs) + `eval/evaluate.py` (6 metrics) on
+   `data/cjson_001_reaper_output.json`; document scores in §10 telemetry doc + this file.
+3. Update docs/skills/progress.md with live-run evidence; commit the working tree (many uncommitted
+   changes above, including new gui/ + harness telemetry + docs).
+
+---
 
 > This file REPLACES the original *build-time* continue.md. The old per-deliverable build order and
 > anti-pattern warnings are preserved in condensed form in §9 and remain authoritative in

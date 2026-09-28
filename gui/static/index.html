@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>REAPER — Run Cockpit</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand">REAPER <span>RUN&nbsp;COCKPIT</span></div>
+    <div class="controls">
+      <label>run-id <input id="ctl-runid" value="cjson_001" spellcheck="false"></label>
+      <label>binary <input id="ctl-binary" value="eval/cjson/cjson_test" size="30" spellcheck="false"></label>
+      <label>phases <input id="ctl-phases" value="2,3,4,5,6,7" size="18" spellcheck="false"></label>
+      <button id="btn-start" class="act">&#9654; Start</button>
+      <button id="btn-stop" class="act">&#9632; Stop</button>
+    </div>
+    <div id="status" class="badge idle">idle</div>
+  </header>
+
+  <div id="phases" class="strip"></div>
+  <div id="coverage" class="strip strip-muted"><span class="muted">coverage —</span> <span id="cov-text">no run yet</span></div>
+
+  <main id="main">
+    <section id="panel-renames" class="panel">
+      <header class="panel-head">
+        <h2>Rename Board</h2>
+        <div class="panel-tools">
+          <input id="fn-filter" placeholder="filter address / name" spellcheck="false">
+          <span id="fn-count" class="muted"></span>
+        </div>
+      </header>
+      <div id="rename-list" class="table"><div class="muted pad">loading…</div></div>
+    </section>
+
+    <section id="panel-dialogues" class="panel">
+      <header class="panel-head">
+        <h2>Active Dialogues</h2>
+        <div class="panel-tools">
+          <button id="dd-pause" class="sm">Pause</button>
+          <button id="dd-clear" class="sm">Clear</button>
+          <span id="dd-count" class="muted"></span>
+        </div>
+      </header>
+      <div id="dialogue-list" class="threads"><div class="muted pad">waiting for LLM turns…</div></div>
+    </section>
+  </main>
+
+  <nav id="drawer-buttons">
+    <button data-drawer="claims">Claims &amp; Tasks</button>
+    <button data-drawer="graph">Call Graph</button>
+    <button data-drawer="health">LLM Health</button>
+    <button data-drawer="feed">Trace Feed</button>
+    <button data-drawer="loops">Loops &amp; Limits</button>
+  </nav>
+
+  <div id="drawer" class="hidden">
+    <div class="drawer-bar">
+      <h2 id="drawer-title"></h2>
+      <button id="drawer-close" class="sm">&#215; close</button>
+    </div>
+    <div id="drawer-content"></div>
+  </div>
+
+  <footer id="footer">
+    <span class="ws" id="ws-state">connecting…</span>
+    <span class="muted" id="ev-count">events: 0</span>
+    <span class="muted" id="files"></span>
+  </footer>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

@@ -11,7 +11,9 @@ model = "deepseek"
 # Maps to max_completion_tokens (TOTAL budget: thinking + response).
 # Structured JSON responses typically consume 200-2000 tokens, so
 # these values leave headroom beyond the thinking portion.
-# minimal=1024, low=4096, medium=12288, high=20480, max=40960.
+# minimal=1024, low=4096, medium=12288, high=20480, max=40960, xhigh=81920.
+# "xhigh" ALSO sends chat_template_kwargs.reasoning_effort=high to the live
+# vLLM (DeepSeek reasoning is budget-driven; more budget => more thinking).
 # AUDIT 2026-09-27 — policy: quality-gated / load-bearing -> max/high, else minimal.
 #   MAX/HIGH (output judged by a gate OR load-bearing for the final report):
 #     pass2_review="max"     review agent is the main claim/rename source + the
@@ -24,13 +26,14 @@ model = "deepseek"
 #                            load-bearing, no later gate — set max 2026-09-27
 #     pass0_type_recovery="high"  struct layouts feed metric 5 + every later
 #                            field rename — load-bearing; set high 2026-09-27
-#     recovery_followup="max"     ANY follow-up type-recovery round (a struct
-#                            applied in a prior round exposes new access
-#                            patterns) gets max effort — set max 2026-09-27
+#     recovery_followup="xhigh"   the DEEPEST tier: ANY follow-up type-recovery
+#                            round (a struct applied in a prior round exposes
+#                            new access patterns) gets max budget + forced high
+#                            reasoning effort — set xhigh 2026-09-27
 #   Minimal (no downstream truth gate; protect the shared serialized :8035 budget):
 #     pass1_rename, scheduler -> "minimal"
 pass0_type_recovery = "high"
-recovery_followup = "max"
+recovery_followup = "xhigh"
 pass1_rename = "minimal"
 pass2_review = "max"
 critic = "high"
@@ -47,7 +50,12 @@ max_investigation_iterations = 200 # cap the investigation drain loop (livelock 
 max_type_recovery_rounds = 5       # cap the pass-0 -> follow-up (recovery_followup) fixed-point loop
 shadow_copy_hops = 2               # N-hop neighborhood for shadow checkouts
 task_timeout_seconds = 600         # stale task timeout (measured from assignment)
-max_concurrent_agents = 8          # parallel vLLM sessions
+max_concurrent_agents = 8          # CPU-side agent tasks (context assembly overlaps freely)
+llm_max_concurrent = 1             # JUSTIFIED hard cap (2026-09-27, user req): strictly ONE
+                                   # request at a time to the shared :8035 vLLM so the GPU
+                                   # worker never drops off the bus. The client's global gate
+                                   # is the single enforcement point; dispatcher fan-out only
+                                   # overlaps CPU work behind it.
 max_context_tokens = 32768         # truncation limit for context assembly
 
 [paths]

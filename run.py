@@ -29,6 +29,10 @@ import neo4j
 
 from reaper.harness.llm_client import ReaperLLMClient
 from reaper.harness.tracer import Tracer
+from reaper.harness.events import emit
+from reaper.harness.rltrace import RLTraceWriter
+from reaper.harness.debugtrace import DebugLogWriter
+from reaper.harness.tracedriver import traced_driver
 from reaper.harness.ledger import Ledger
 from reaper.harness.todo import TodoLedger
 from reaper.harness.context import ContextAssembler
@@ -70,6 +74,12 @@ async def build_graph(extractor, neo4j_driver) -> None:
     await validate_and_order(neo4j_driver)
 
 
+async def _phase_event(run_id: str, phase: int, status: str, **extra) -> None:
+    """Emit a live run.phase event (never raises)."""
+    await emit("run.phase", "runner", {
+        "run_id": run_id, "phase": phase, "status": status, **extra})
+
+
 async def run_pipeline(binary_path: str, config_path: str, run_id: str = "default",
                        phases=None):
     """Run the selected pipeline phases (default all of 2-7).
@@ -100,6 +110,18 @@ async def run_pipeline(binary_path: str, config_path: str, run_id: str = "defaul
     Path(config["paths"]["traces_dir"]).mkdir(parents=True, exist_ok=True)
     tracer = Tracer(f"{config['paths']['traces_dir']}/{run_id}")
 
+    # Live telemetry: RL/tuning trace (clean per-LLM-turn records) + full
+    # debug firehose (every event). Both are modular bus subscribers; the
+    # monitoring GUI consumes the same stream over WebSocket/REST.
+    rl_writer = RLTraceWriter(config["paths"]["data_dir"], run_id)
+    debug_writer = DebugLogWriter(config["paths"]["data_dir"], run_id)
+    rl_writer.start()
+    debug_writer.start()
+    await emit("run.started", "runner", {
+        "run_id": run_id, "binary": binary_path, "config": config_path,
+        "phases": sorted(phases),
+    })
+
     if not _compat.BINJA_AVAILABLE:
         print(
             "[reaper.run] Binary Ninja headless not importable — the Phase 2 graph "
@@ -112,6 +134,9 @@ async def run_pipeline(binary_path: str, config_path: str, run_id: str = "defaul
     neo4j_driver = neo4j.AsyncGraphDatabase.driver(
         config['neo4j']['uri'],
         auth=(config['neo4j']['user'], config['neo4j']['password']))
+    # Wrap the driver so every graph access becomes a live 'graph.query'
+    # event (debug/RL trace) — the "what the agents accessed" record.
+    neo4j_driver = traced_driver(neo4j_driver, label="master", run_id=run_id)
     llm = None
     ledger = None
     todo = None
@@ -122,7 +147,9 @@ async def run_pipeline(binary_path: str, config_path: str, run_id: str = "defaul
         # Phase 2: Build graph
         extractor = HLILExtractor(binary_path, config['paths']['data_dir'])
         if 2 in phases:
+            await _phase_event(run_id, 2, "start")
             await build_graph(extractor, neo4j_driver)
+            await _phase_event(run_id, 2, "done")
         else:
             print(
                 "[reaper.run] Phase 2 (graph build) skipped — "
@@ -132,7 +159,10 @@ async def run_pipeline(binary_path: str, config_path: str, run_id: str = "defaul
         wants_harness = any(p in phases for p in (3, 4, 5, 6, 7))
         if wants_harness:
             # Phase 3: Init harness (required by every later phase).
-            llm = ReaperLLMClient(config['vllm']['base_url'], config['vllm']['model'])
+            llm = ReaperLLMClient(
+                config['vllm']['base_url'], config['vllm']['model'], run_id=run_id,
+                max_concurrent=int((config.get("limits") or {}).get(
+                    "llm_max_concurrent", 1)))
             ledger = Ledger(f"{config['paths']['data_dir']}/{run_id}_ledger.db",
                             neo4j_driver)
             await ledger.init()
@@ -146,6 +176,7 @@ async def run_pipeline(binary_path: str, config_path: str, run_id: str = "defaul
 
             # Phase 4: Type recovery
             if 4 in phases:
+                await _phase_event(run_id, 4, "start")
                 type_agent = TypeRecoveryAgent(llm, context_asm, config)
                 detector = StructAccessDetector(extractor)
                 rebuilder = GraphRebuilder(extractor, bndb_writer, neo4j_driver)
@@ -196,20 +227,26 @@ async def run_pipeline(binary_path: str, config_path: str, run_id: str = "defaul
                     round_no += 1
                 # Re-register after graph changes from type recovery
                 await ledger.register_functions_from_graph()
+                await _phase_event(run_id, 4, "done")
 
             # Phase 5: Pass 1
             if 5 in phases:
+                await _phase_event(run_id, 5, "start")
                 await Pass1Dispatcher(llm, neo4j_driver, context_asm,
                                       bndb_writer, ledger, tracer, config).run()
+                await _phase_event(run_id, 5, "done")
 
             # Phase 6: Pass 2
             if 6 in phases:
+                await _phase_event(run_id, 6, "start")
                 await Pass2Dispatcher(llm, neo4j_driver, context_asm, shadow_mgr,
                                       merge, bndb_writer, ledger, todo, tracer,
                                       config).run()
+                await _phase_event(run_id, 6, "done")
 
             # Phase 7: Investigation + Resynthesis
             if 7 in phases:
+                await _phase_event(run_id, 7, "start")
                 scheduler = Scheduler(llm, todo, context_asm, tracer, config)
                 inv_agent = InvestigationAgent(llm, context_asm, ledger, todo,
                                                tracer, config)
@@ -267,8 +304,19 @@ async def run_pipeline(binary_path: str, config_path: str, run_id: str = "defaul
             print(f"Reaper output (evaluation input): {output_path}")
             print(f"BNDB: {extractor.bndb_path}")
             print(f"Traces: {tracer.log_dir}")
+            await emit("run.complete", "runner", {
+                "run_id": run_id, "complete": complete,
+                "coverage": coverage, "reaper_output": output_path,
+            })
         else:
             print("RE stage graph-only ('--phases 2'): BNDB/graph built.")
+            await emit("run.complete", "runner", {
+                "run_id": run_id, "complete": None, "note": "graph build only",
+            })
+    except Exception as exc:  # noqa: BLE001 - record then re-raise for the CLI
+        await emit("run.error", "runner", {
+            "run_id": run_id, "error": f"{type(exc).__name__}: {exc}"})
+        raise
     finally:
         if llm is not None:
             try:
@@ -290,6 +338,12 @@ async def run_pipeline(binary_path: str, config_path: str, run_id: str = "defaul
                 await neo4j_driver.close()
             except Exception:
                 log.debug("run: neo4j_driver.close failed", exc_info=True)
+        # Flush RL/debug writers so no telemetry is lost on shutdown.
+        for _w in (debug_writer, rl_writer):
+            try:
+                await _w.stop()
+            except Exception:
+                log.debug("run: telemetry writer stop failed", exc_info=True)
 
 
 def main() -> None:  # noqa: D103 — console-script entry point (async wrapper)

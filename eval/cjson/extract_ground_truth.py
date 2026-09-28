@@ -103,11 +103,21 @@ def _struct_layouts(bv) -> dict:
     return layouts
 
 
+def _open_bv(path):
+    """Open a live view regardless of API naming (open_view vs load)."""
+    import binaryninja  # noqa: PLC0415 - may raise ImportError when absent
+    opener = getattr(binaryninja, "open_view", None) or getattr(
+        binaryninja, "load", None)
+    if opener is None:
+        raise RuntimeError(f"no BinaryView opener on {binaryninja!r}")
+    return opener(path)
+
+
 def extract() -> dict:
     import binaryninja  # may raise ImportError when Binja is absent
 
-    sym_bv = binaryninja.open_view(SYM_BINARY)
-    stripped_bv = binaryninja.open_view(STRIPPED_BINARY)
+    sym_bv = _open_bv(SYM_BINARY)
+    stripped_bv = _open_bv(STRIPPED_BINARY)
 
     ground_truth: dict = {}
     for func in sym_bv.functions:

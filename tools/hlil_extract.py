@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from reaper.harness.events import bus, emit_sync
 from reaper.tools import _compat
 
 
@@ -48,10 +49,25 @@ class HLILExtractor:
         _compat.require_binja("HLILExtractor")
         self.binary_path = binary_path
         self.data_dir = data_dir
-        self.bv = _compat.binaryninja.open_view(binary_path)
+        self.bv = _compat.open_view(binary_path)
         self.bndb_path = os.path.join(data_dir, "target.bndb")
         if not os.path.exists(self.bndb_path):
             self.bv.create_database(self.bndb_path)
+
+    def _emit_access(self, method: str, address: Any = None) -> None:
+        """Emit a ``tool.access`` record for Binja reads (debug/RL trace).
+
+        No-op when nothing is subscribed; swallows all errors.
+        """
+        if not bus.has_subscribers:
+            return
+        try:
+            data: dict = {"method": method}
+            if address is not None:
+                data["address"] = str(address)
+            emit_sync("tool.access", "binja", data)
+        except Exception:  # noqa: BLE001
+            pass
 
     # -- object access (used by the graph builders, not in the 2.1 doc) ------
 
@@ -73,6 +89,7 @@ class HLILExtractor:
 
     def list_functions(self) -> list[dict]:
         """Return [{address, name, size, imported}, ...] for all functions."""
+        self._emit_access("list_functions")
         out = []
         for f in self.bv.functions:
             size = getattr(f, "size", None)
@@ -98,6 +115,7 @@ class HLILExtractor:
         does not exist in Binja 6.0). One instruction per line, each prefixed
         with the hex address of the instruction.
         """
+        self._emit_access("get_function_hlil", func_address)
         f = self.get_function(func_address)
         if f is None:
             return ""
@@ -111,6 +129,7 @@ class HLILExtractor:
         spans two functions both sections are returned, separated by a
         function header. Used by the critic to retrieve evidence.
         """
+        self._emit_access("get_hlil_range", address_start)
         start = _to_int(address_start)
         end = _to_int(address_end)
         sections: list[str] = []
@@ -127,6 +146,7 @@ class HLILExtractor:
     def get_function_signature(self, func_address: str) -> str:
         """Return the function prototype as Binja renders it, e.g.
         'int64_t sub_1400(int64_t arg1, char* arg2)'."""
+        self._emit_access("get_function_signature", func_address)
         f = self.get_function(func_address)
         if f is None:
             return ""
@@ -142,6 +162,7 @@ class HLILExtractor:
         section) whose constant matches a known string start. Deliberately
         ignores ``HighLevelILConstData`` (variable-sized inline data).
         """
+        self._emit_access("get_string_refs", func_address)
         f = self.get_function(func_address)
         if f is None:
             return []
@@ -165,6 +186,7 @@ class HLILExtractor:
     def get_variables(self, func_address: str) -> list[dict]:
         """Return [{name, type, source, identifier}, ...] for all variables
         in ``func.vars`` (Binja 6.0 property)."""
+        self._emit_access("get_variables", func_address)
         f = self.get_function(func_address)
         if f is None:
             return []
@@ -182,6 +204,7 @@ class HLILExtractor:
     def get_parameters(self, func_address: str) -> list[dict]:
         """Return [{name, type, index}, ...] for all parameters in
         ``func.parameter_vars``."""
+        self._emit_access("get_parameters", func_address)
         f = self.get_function(func_address)
         if f is None:
             return []

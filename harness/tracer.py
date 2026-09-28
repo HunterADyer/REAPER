@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from reaper.harness.events import emit
+
 log = logging.getLogger(__name__)
 
 # Complete documented trace vocabulary. Logging an event outside this set no
@@ -82,6 +84,9 @@ class Tracer:
                 self._file.flush()
             except Exception:
                 log.exception("tracer write failed for %s", event_type)
+        # Mirror into the live event bus (GUI / RL / debug log). Fire-and-forget:
+        # telemetry must never take down the pipeline.
+        await emit(event_type, session_id, data if data is not None else {})
 
     async def close(self) -> None:
         """Flush and close the trace file (async; call at end of run)."""

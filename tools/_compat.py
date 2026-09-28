@@ -35,6 +35,23 @@ try:  # pragma: no cover - exercised only when Binja is installed
         VariableSourceType,
     )
 
+    # HighLevelILOperation member drift across Binja builds: 6.0 renamed some
+    # members REAPER still references. Alias the legacy names to the current
+    # ones so neither `_BINARY_OPS`/`_UNARY_SRC_OPS` construction nor tool-side
+    # comparisons raise AttributeError at import time. Fall back to a harmless
+    # sentinel for names with no 1:1 replacement (they simply never match).
+    for _legacy, _modern in (("HLIL_FLOAT_NEG", "HLIL_FNEG"),
+                             ("HLIL_FLOAT_ABS", "HLIL_FABS")):
+        if not hasattr(Op, _legacy) and hasattr(Op, _modern):
+            try:
+                setattr(Op, _legacy, getattr(Op, _modern))
+            except Exception:  # pragma: no cover - enum metaclass quirks
+                pass
+
+    # BinaryView opener: older docs use `open_view`; 6.0 exposes only `load`.
+    # Resolved dynamically so test doubles that patch `binaryninja.open_view`
+    # (tests/fake_binja.py) or the real 6.0 `load` both work unchanged.
+
     BINJA_AVAILABLE = True
 except ImportError:  # Binja not on PYTHONPATH — use the fallback enums
     Op = None  # type: ignore[assignment]
@@ -200,6 +217,21 @@ def require_binja(feature: str = "this feature") -> None:
         raise RuntimeError(f"{feature} requires Binary Ninja headless. {_BINJA_HINT}")
 
 
+def open_view(path):
+    """Open a binary in a live BinaryView, regardless of API naming.
+
+    Binja 6.0 exposes ``load`` (older builds exposed ``open_view``). Resolve
+    at call time so live installs and test doubles both work unchanged.
+    """
+    if not BINJA_AVAILABLE:
+        raise RuntimeError(_BINJA_HINT)
+    opener = getattr(binaryninja, "open_view", None) or getattr(
+        binaryninja, "load", None)
+    if opener is None:
+        raise RuntimeError(f"no BinaryView opener found on {binaryninja!r}")
+    return opener(path)
+
+
 # ---------------------------------------------------------------------------
 # Recursive HLIL instruction walker (binja-module.md § 6)
 # ---------------------------------------------------------------------------
@@ -275,6 +307,12 @@ def walk_expr(expr: Any, visitor) -> None:
     """
     if expr is None:
         return
+    # Real Binja `.operands` mix expressions with primitives (Variable, int,
+    # GotoLabel, nested lists). Visitors like hlil_extract._grab assume every
+    # node is an expression, so non-expression operands must be skipped — never
+    # passed to `visitor` or recursed into (they are serialization metadata).
+    if not hasattr(expr, "operation"):
+        return
     visitor(expr)
 
     op = expr.operation
@@ -321,13 +359,21 @@ def walk_expr(expr: Any, visitor) -> None:
         return
     # HLIL_VAR_PHI / HLIL_MEM_PHI / HLIL_BLOCK / leaves / anything else:
     # rely on .operands (mirrors instr.operands) if present, otherwise stop.
+    # Flatten nested lists and keep only expression children (see entry guard).
     operands = getattr(expr, "operands", None)
-    for child in _safe_list(operands):
-        walk_expr(child, visitor)
+    for _item in _safe_list(operands):
+        if isinstance(_item, (list, tuple)):
+            _children = _safe_list(_item)
+        else:
+            _children = [_item]
+        for child in _children:
+            if child is not None and hasattr(child, "operation"):
+                walk_expr(child, visitor)
 
 
 __all__ = [
     "binaryninja",
+    "open_view",
     "Op",
     "SymbolType",
     "TypeClass",
