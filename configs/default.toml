@@ -68,11 +68,12 @@ max_type_recovery_rounds = 5       # cap the pass-0 -> follow-up (recovery_follo
 shadow_copy_hops = 2               # N-hop neighborhood for shadow checkouts
 task_timeout_seconds = 600         # stale task timeout (measured from assignment)
 max_concurrent_agents = 8          # CPU-side agent tasks (context assembly overlaps freely)
-llm_max_concurrent = 1             # JUSTIFIED hard cap (2026-09-27, user req): strictly ONE
-                                   # request at a time to the shared :8035 vLLM so the GPU
-                                   # worker never drops off the bus. The client's global gate
-                                   # is the single enforcement point; dispatcher fan-out only
-                                   # overlaps CPU work behind it.
+llm_max_concurrent = 4             # bounded batching (2026-09-28): server is vLLM 0.24.0 on
+                                   # 2x RTX PRO 6000 (98GB), DeepSeek-V4 MLA batches safely.
+                                   # 4 in-flight lets the server batch without hammering the
+                                   # shared :8035; raised from the original hard 1 (which was
+                                   # a vLLM-bug-era stability guard now obsolete). Revisit with
+                                   # server --max-num-seqs raised to 64 to actually see gains.
 max_context_tokens = 32768         # truncation limit for context assembly
 
 [paths]
