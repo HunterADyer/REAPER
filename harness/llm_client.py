@@ -42,10 +42,18 @@ _THINKING_BUDGETS = {
 }
 
 # Optional per-level request knobs sent to the live vLLM (safe: only added for
-# levels listed; vLLM honors `chat_template_kwargs.reasoning_effort` for
-# DeepSeek — verified live 2026-09-27 it is accepted with status 200). Levels
-# NOT listed are unchanged (no behavior regression).
-_REASONING_EFFORT_BY_LEVEL = {"xhigh": "high"}
+# levels listed; vLLM honors `chat_template_kwargs.reasoning_effort` for DeepSeek
+# — verified live 2026-09-27 it is accepted with status 200). Empirically
+# verified 2026-09-28 against the live :8035 (scripts/probe_effort.py): on the
+# deployed vLLM 0.24.0 + DeepSeek-V4 tokenizer, min/low/medium/high ALL collapse
+# to a cheap "high" thinking mode (tens-hundreds of reasoning tokens), and only
+# "max"/"xhigh" activate the deep "absolute maximum" directive (thousands of
+# reasoning tokens). REAPER must therefore send the DEEPEST effort explicitly
+# for the tiers that exist to be deep at all. Levels NOT listed are unchanged
+# (no behavior regression). xhigh -> "xhigh" so the tokenizer maps it to "max"
+# (a plain "high" here made our "xhigh" tier indistinguishable from cheap
+# high-effort thinking — fixed 2026-09-28).
+_REASONING_EFFORT_BY_LEVEL = {"max": "xhigh", "xhigh": "xhigh"}
 
 # Per-request read timeout by thinking level. Reasoning models can legitimately
 # think for many minutes at high/max budgets; a flat short timeout aborts LIVE

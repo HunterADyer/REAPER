@@ -143,6 +143,44 @@ async def test_unknown_thinking_level_raises(fake_vllm, zero_backoff):
 
 
 @pytest.mark.asyncio
+async def test_reasoning_effort_shipped_only_for_deep_tiers(fake_vllm):
+    """Empirically verified (2026-09-28, scripts/probe_effort.py): the :8035
+    vLLM 0.24.0 DeepSeek-V4 tokenizer collapses minimal/low/medium/high to a
+    cheap 'high' thinking mode and only honors the deep directive for
+    max/xhigh. REAPER must therefore ship chat_template_kwargs.reasoning_effort
+    ONLY for the deep tiers, and NEVER for the cheap ones."""
+    server = fake_vllm()
+    client = ReaperLLMClient(server.base_url, model="fake-model")
+    try:
+        n = 0
+        for level, expected in [
+            ("minimal", None),
+            ("low", None),
+            ("medium", None),
+            ("high", None),
+            ("max", "xhigh"),
+            ("xhigh", "xhigh"),
+        ]:
+            sid = f"s_eff_{level}"
+            await client.create_session(sid, "sys")
+            await client.send(sid, "go", thinking_level=level)
+            body = server.payloads[-1]
+            kw = body.get("chat_template_kwargs")
+            if expected is None:
+                assert kw is None or "reasoning_effort" not in kw, (
+                    f"{level} should not ship reasoning_effort, got {kw}")
+            else:
+                assert kw is not None, f"{level} must ship chat_template_kwargs"
+                assert kw.get("reasoning_effort") == expected, (
+                    f"{level} expected effort {expected!r}, got "
+                    f"{kw.get('reasoning_effort')!r}")
+            n += 1
+        assert n == 6
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_missing_session_raises(fake_vllm, zero_backoff):
     server = fake_vllm()
     client = ReaperLLMClient(server.base_url, model="fake-model")

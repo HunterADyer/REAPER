@@ -12,34 +12,51 @@ model = "deepseek"
 # Structured JSON responses typically consume 200-2000 tokens, so
 # these values leave headroom beyond the thinking portion.
 # minimal=1024, low=4096, medium=12288, high=20480, max=40960, xhigh=81920.
-# "xhigh" ALSO sends chat_template_kwargs.reasoning_effort=high to the live
-# vLLM (DeepSeek reasoning is budget-driven; more budget => more thinking).
-# AUDIT 2026-09-27 — policy: quality-gated / load-bearing -> max/high, else minimal.
-#   MAX/HIGH (output judged by a gate OR load-bearing for the final report):
-#     pass2_review="max"     review agent is the main claim/rename source + the
-#                            task critic derives from this same level
-#     critic="high"          the gate itself — sets truth_level on every claim
-#     investigation="high"   claims are critic-gated; task requeued on reject
-#     merge="max"            conflict-resolution correctness is FINAL for renames
-#                            (no later gate) — set max 2026-09-27
-#     resynthesis="max"      edits the ledger directly (merged/deleted claims);
-#                            load-bearing, no later gate — set max 2026-09-27
-#     pass0_type_recovery="high"  struct layouts feed metric 5 + every later
-#                            field rename — load-bearing; set high 2026-09-27
-#     recovery_followup="xhigh"   the DEEPEST tier: ANY follow-up type-recovery
-#                            round (a struct applied in a prior round exposes
-#                            new access patterns) gets max budget + forced high
-#                            reasoning effort — set xhigh 2026-09-27
-#   Minimal (no downstream truth gate; protect the shared serialized :8035 budget):
+#
+# EFFORT SEMANTICS (empirically verified 2026-09-28 against the live :8035
+# vLLM 0.24.0 + DeepSeek-V4 tokenizer, scripts/probe_effort.py):
+#   - The tokenizer collapses every effort value: "none" disables thinking;
+#     "max"/"xhigh" add the deep "absolute maximum" reasoning directive;
+#     everything else (minimal/low/medium/high) is a THINNED "high" thinking
+#     mode that is CHEAP (tens-hundreds of reasoning tokens on simple tasks;
+#     1-8s). Only genuinely deep work ever approaches the max budget.
+#   - The effort tier is a CAPACITY, not a mandate: a max directive on a
+#     trivial task still finishes in ~2s. So high-effort tiers cost nothing
+#     unless the task actually needs deep reasoning.
+#   - REAPER sends chat_template_kwargs.reasoning_effort ONLY for the deep
+#     tiers ("max"->"xhigh", "xhigh"->"xhigh"); all other levels send nothing
+#     and get the cheap default high-mode thinking.
+#
+# AUDIT 2026-09-28 — user-directed policy: "use medium/high rather than xhigh;
+# force the critics to be xhigh and give specific feedback to the point that
+# lower levels of effort aren't needed."
+#   xhigh (deepest capacity + deep directive) — the GATE + rare deep work:
+#     critic="xhigh"            THE truth gate: sets truth_level on every claim
+#                               and hands back SPECIFIC feedback. Forcing this
+#                               deep makes cheaper upstream stages unnecessary.
+#     recovery_followup="xhigh" rare follow-up type-recovery rounds (struct
+#                               applied earlier exposes new access patterns) —
+#                               deep type work is load-bearing for metric 5.
+#   high (cheap thinned thinking, cover 99% of calls):
+#     pass0_type_recovery="high"  struct layouts feed metric 5 + field renames
+#     pass2_review="high"         main claim/rename source; critic GATES claims
+#                                 (specific feedback -> review retries, so
+#                                 review does not need max)
+#     investigation="high"        claims are critic-gated; requeue on reject
+#     merge="high"                conflict resolution is narrow+rare; ONLY
+#                                 triggered when a shadow diff has conflicts
+#     resynthesis="high"          group-level contradiction/dup review; the
+#                                 deep critic supervises downstream claims
+#   minimal (no downstream truth gate; protect shared serialized :8035 budget):
 #     pass1_rename, scheduler -> "minimal"
 pass0_type_recovery = "high"
 recovery_followup = "xhigh"
 pass1_rename = "minimal"
-pass2_review = "max"
-critic = "high"
+pass2_review = "high"
+critic = "xhigh"
 investigation = "high"
-merge = "max"
-resynthesis = "max"
+merge = "high"
+resynthesis = "high"
 scheduler = "minimal"
 
 [limits]
