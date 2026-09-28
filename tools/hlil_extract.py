@@ -183,6 +183,29 @@ class HLILExtractor:
             _compat.walk_expr(ins, _grab)
         return refs
 
+    def get_data_var_at(self, address) -> dict | None:
+        """Return ``{name, address, size}`` for the global data variable at or
+        CONTAINING ``address`` (Binja data_vars), or None.
+
+        Global struct-member loads are decompiled as ``*(&data_40XXXX + 0)`` —
+        a CONST_PTR whose address lies INSIDE a global object. The type
+        detector resolves these to a stable global base by finding the
+        containing data variable (its start + size), so a common global struct
+        is recovered as ONE type across functions instead of being dropped.
+        """
+        self._emit_access("get_data_var_at", _hex(address))
+        addr = _to_int(address)
+        for dv in getattr(self.bv, "data_vars", {}).values():
+            start = getattr(dv, "start", 0)
+            size = getattr(dv, "size", 0) or 1
+            if start <= addr < start + size:
+                return {
+                    "name": getattr(dv, "name", f"global_{_hex(start)}"),
+                    "address": start,
+                    "size": size,
+                }
+        return None
+
     def get_variables(self, func_address: str) -> list[dict]:
         """Return [{name, type, source, identifier}, ...] for all variables
         in ``func.vars`` (Binja 6.0 property)."""

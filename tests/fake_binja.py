@@ -211,10 +211,16 @@ class FakeSymbol:
 class FakeBinaryView:
     """Mirror of a Binja BinaryView (binja-module §§ 1, 7, 8)."""
 
-    def __init__(self, functions=None, strings=None, data=None):
+    def __init__(self, functions=None, strings=None, data=None, data_vars=None):
         self.functions = list(functions or [])
         self._strings = list(strings or [])
         self._data = dict(data or {})  # address -> bytes
+        self.data_vars = dict(data_vars or {})  # address -> {start,size,name}
+
+    def set_data_vars(self, data_vars):
+        """Register global data objects: {address: {start, size, name}}."""
+        self.data_vars = dict(data_vars or {})
+        return self
 
     @property
     def strings(self):
@@ -301,6 +307,19 @@ class FakeExtractor:
     def get_functions(self):
         return list(self.bv.functions)
 
+    def get_data_var_at(self, address):
+        """Return {name, address, size} of the global data object containing
+        ``address`` (mirrors the real HLILExtractor; powers global-base type
+        detection). Populated via ``set_data_vars`` from the containing view.
+        """
+        data_vars = getattr(self.bv, "data_vars", {})
+        for dv in data_vars.values():
+            start = getattr(dv, "start", 0)
+            size = getattr(dv, "size", 0) or 1
+            if start <= int(address, 16) < start + size:
+                return {"name": getattr(dv, "name", f"global_{start:x}"),
+                        "address": start, "size": size}
+        return None
     def get_function_hlil(self, address):
         f = self.get_function(address=address)
         return f.hlil if f is not None else None

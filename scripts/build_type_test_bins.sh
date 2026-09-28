@@ -16,7 +16,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIR="$ROOT/data/corpora/type_tests"
 mkdir -p "$DIR"
 
-for src in "$DIR"/type_test_0*.c; do
+for src in "$DIR"/type_test_*.c; do
   base="$(basename "$src" .c)"
   for opt in 0 2; do
     out="$DIR/${base}_o${opt}"
@@ -28,7 +28,7 @@ done
 
 echo
 echo "sanity: all functions are anonymous after stripping:"
-for b in "$DIR"/type_test_0*_o0; do
+for b in "$DIR"/type_test_*_o0; do
   printf '  %-28s visible non-stripped funcs: ' "$(basename "$b")"
   nm "$b" 2>/dev/null | awk '$2=="T"{print $3}' | tr '\n' ' '
   echo

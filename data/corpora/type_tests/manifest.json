@@ -1,0 +1,288 @@
+{
+  "version": 1,
+  "note": "Detector-level invariants for the 25-binary adversarial type-recovery corpus. These encode GROUND-TRUTH expectations derived from each binary's C source (recovered structs/offsets, cross-function merge requirements, union-discrimination, noise bounds). They are DESIRED behavior: `scripts/run_type_test_bins.py --check` fails when the detector regresses (drops a real struct, fails a required merge, fabricates a union, or explodes candidate count). Offsets are byte offsets from the recovered base as Binja reports them; where -O0/-O2 legally differ the expectations are keyed per optimization level. Ranges are intentionally loose where register/analysis noise is inherent.",
+  "defaults": {
+    "max_candidates": 6,
+    "min_distinct_offsets": 1,
+    "min_functions_in_candidate": 1
+  },
+  "tests": {
+    "01": {
+      "name": "nested",
+      "about": "struct record {inner_item* item@0; uint16 flags@8; char* label@16} shared across 3 mutually-calling functions; each sees a partial view. The cross-function merge MUST unify into one candidate.",
+      "checks": {
+        "both": {
+          "max_candidates": 3,
+          "need_offsets_in_one": [0, 8],
+          "min_functions_in_some": 3,
+          "need_overlap": false
+        }
+      }
+    },
+    "02": {
+      "name": "llist",
+      "about": "struct lnode {void* key@0; struct lnode* next@8; uint64 val@16} shared across find/insert/remove. Merge required.",
+      "checks": {
+        "both": {
+          "max_candidates": 4,
+          "need_offsets_in_one": [0, 8],
+          "min_functions_in_some": 3,
+          "need_overlap": false
+        }
+      }
+    },
+    "03": {
+      "name": "pointers",
+      "about": "struct table_entry {char* name@0; uint64 value@8}; pointer-to-pointer table. Must NOT flatten the pointer chain into garbage offsets.",
+      "checks": {
+        "both": {
+          "max_candidates": 4,
+          "need_offsets_in_one": [0, 8],
+          "min_functions_in_some": 1,
+          "need_overlap": false
+        }
+      }
+    },
+    "04": {
+      "name": "union_halves",
+      "about": "genuine union u {uint64 raw@0; struct{uint16 lo; uint32 mid;}} + struct packet{u; uint8 len@8}. Access widths differ at +0 -> overlap MUST fire (a real union).",
+      "checks": {
+        "both": {
+          "max_candidates": 4,
+          "need_offsets_in_one": [0, 8],
+          "min_functions_in_some": 1,
+          "need_overlap": true
+        }
+      }
+    },
+    "05": {
+      "name": "false_merge",
+      "about": "two unrelated structs {uint32,uint32} passed to a generic void* helper with identical offsets. Detector legitimately merges; the LLM verdict is the gate. Detector check: the merged offsets {0,4} ARE present (over-merge is the model's job to reject).",
+      "checks": {
+        "both": {
+          "max_candidates": 2,
+          "need_offsets_in_one": [0, 4],
+          "min_functions_in_some": 3,
+          "need_overlap": false
+        }
+      }
+    },
+    "06": {
+      "name": "canary_noise",
+      "about": "TLS stack canary (fsbase+0x28) + register-temp noise must be suppressed while the ONE real struct config {0,4,8,16,31} is recovered. Bounds deliberately lenient for -O2 register/`i` temp noise (the verdict rejects those); the invariant is: the real multi-offset config struct IS recovered and canary bases never appear.",
+      "checks": {
+        "o0": { "max_candidates": 3, "need_offsets_in_one": [4, 8], "min_functions_in_some": 2, "need_overlap": false },
+        "o2": { "max_candidates": 7, "need_offsets_in_one": [8], "min_functions_in_some": 1, "need_overlap": false }
+      }
+    },
+    "07": {
+      "name": "false_merge_regs",
+      "about": "two unrelated structs {0,8} reaching a common helper via registers at -O2. Over-merge tolerated at detector level (verdict gates).",
+      "checks": {
+        "both": {
+          "max_candidates": 3,
+          "need_offsets_in_one": [0, 8],
+          "min_functions_in_some": 1,
+          "need_overlap": false
+        }
+      }
+    },
+    "08": {
+      "name": "union_widths",
+      "about": "union u_state: same bytes at +0 read as int32 (4B) and uint64 (8B). Overlap hint MUST fire.",
+      "checks": {
+        "both": {
+          "max_candidates": 4,
+          "need_offsets_in_one": [0],
+          "min_functions_in_some": 1,
+          "need_overlap": true
+        }
+      }
+    },
+    "09": {
+      "name": "common_prefix",
+      "about": "struct net_hdr {0,4,6} and udp_dgram {0,4,6,10} share a header. Detector merges via same pointer; verdict must NOT fabricate mixed semantics. Detector check: offsets {0,4,6,10} present.",
+      "checks": {
+        "both": {
+          "max_candidates": 3,
+          "need_offsets_in_one": [0, 4],
+          "min_functions_in_some": 3,
+          "need_overlap": false
+        }
+      }
+    },
+    "10": {
+      "name": "tagged_union",
+      "about": "variant {uint64 tag@0; union{ pair a,b @8/16 ; str len @16} payload}; union member at +8 aliased by read_pair (int64) and read_str_len (uint32 at +16). Overlap expected at the payload region.",
+      "checks": {
+        "both": {
+          "max_candidates": 3,
+          "need_offsets_in_one": [0, 8, 16],
+          "min_functions_in_some": 1,
+          "need_overlap": true
+        }
+      }
+    },
+    "11": {
+      "name": "packed",
+      "about": "packed_record {uint8 kind@0; uint32 seq@1; uint16 port@5; uint64 payload@7} UNALIGNED offsets + sizes. THE discrimination test: offsets must be {0,1,5,7}, never rounded/naturalized.",
+      "checks": {
+        "both": {
+          "max_candidates": 4,
+          "need_offsets_in_one": [1, 5, 7],
+          "min_functions_in_some": 1,
+          "need_overlap": false
+        }
+      }
+    },
+    "12": {
+      "name": "bitfields",
+      "about": "bitfields packed into a single uint32 word at +0; every op is (+0, width 2/4). Must NOT fabricate a nonsense multi-offset struct; single-field struct acceptable.",
+      "checks": {
+        "both": {
+          "max_candidates": 4,
+          "need_offsets_in_one": [0],
+          "min_functions_in_some": 1,
+          "need_overlap": false
+        }
+      }
+    },
+    "13": {
+      "name": "runtime_index",
+      "about": "struct row {uint32 id@0; uint32 next@4; uint64 value@16} indexed by a RUNTIME loop var. Detector must surface the constant field offsets {0,4,16} despite symbolic index scaling.",
+      "checks": {
+        "both": {
+          "max_candidates": 4,
+          "need_offsets_in_one": [0, 4],
+          "min_functions_in_some": 1,
+          "need_overlap": false
+        }
+      }
+    },
+    "14": {
+      "name": "container_of",
+      "about": "intrusive list: list_head {0,8} embedded in struct item (magic@0, link@8, name@24); owner recovered via NEGATIVE offset from the embedded member. The stable invariant is the list linkage + owner recovery; item offsets are negative/owner-relative so exact {0,8} is NOT a stable assertion here.",
+      "checks": {
+        "both": {
+          "max_candidates": 6,
+          "need_offsets_in_one": [8],
+          "min_distinct_offsets": 2,
+          "min_functions_in_some": 1,
+          "need_overlap": false
+        }
+      }
+    },
+    "15": {
+      "name": "callback",
+      "about": "struct session {id@0; buf@8; len@16} shared ONLY via function-pointer callbacks. No call-context edge exists; merge relies on identical type/offset bridging.",
+      "checks": {
+        "o0": { "max_candidates": 4, "need_offsets_in_one": [0, 8, 16], "min_functions_in_some": 2, "need_overlap": false },
+        "o2": { "max_candidates": 6, "need_offsets_in_one": [0, 8, 16], "min_functions_in_some": 2, "need_overlap": false }
+      }
+    },
+    "16": {
+      "name": "ptr_chain",
+      "about": "struct item {id@0; next@8} through pointer-to-pointer-to-pointer. Only the leaf's +0 is ever read (no field beyond id is accessed); the invariant is that the chain does NOT fabricate garbage offsets.",
+      "checks": {
+        "both": {
+          "max_candidates": 3,
+          "need_offsets_in_one": [0],
+          "min_functions_in_some": 1,
+          "need_overlap": false
+        }
+      }
+    },
+    "17": {
+      "name": "by_value",
+      "about": "struct point {x,y} passed/returned BY VALUE (register decomposition). -O0 keeps a {0,4} panel; -O2 registers may make it unobservable — the only invariant is NO nonsense multi-offset fabrication.",
+      "checks": {
+        "o0": { "max_candidates": 2, "need_offsets_in_one": [0, 4], "min_functions_in_some": 1, "need_overlap": false },
+        "o2": { "max_candidates": 3, "min_functions_in_some": 1, "need_overlap": false }
+      }
+    },
+    "18": {
+      "name": "global_base",
+      "about": "global_config {magic@0; version@4; flag@8; hook@16} accessed via a GLOBAL. Member loads are *(const_ptr + 0) resolved to a page-aligned global family; offsets are PAGE-RELATIVE (0x20..0x38 for the 0x404000 page). The hard invariant: ALL functions touching the same global merge into ONE candidate.",
+      "checks": {
+        "o0": { "max_candidates": 2, "need_offsets_in_one": [32, 40], "min_functions_in_some": 4, "need_overlap": false },
+        "o2": { "max_candidates": 2, "need_offsets_in_one": [32, 48], "min_functions_in_some": 4, "need_overlap": false }
+      }
+    },
+    "19": {
+      "name": "sparse_field",
+      "about": "struct handle {pad[8]; cookie@8} — ONLY +8 is ever accessed (nonzero single offset). The pure-indirection drop (offset-0-only) MUST NOT remove it.",
+      "checks": {
+        "both": {
+          "max_candidates": 2,
+          "need_offsets_in_one": [8],
+          "min_functions_in_some": 2,
+          "need_overlap": false
+        }
+      }
+    },
+    "20": {
+      "name": "memcpy_noise",
+      "about": "struct blob {magic@0; size@8; data@16} with heavy memcpy/memset noise. Noise must be skipped; real field accesses {0,8} recovered.",
+      "checks": {
+        "both": {
+          "max_candidates": 3,
+          "need_offsets_in_one": [0, 8],
+          "min_functions_in_some": 1,
+          "need_overlap": false
+        }
+      }
+    },
+    "21": {
+      "name": "mutual_recursion",
+      "about": "a_node {int32 av@0; b* bb@8} and b_node {int64 bv@0; a* aa@8} in mutual recursion. +0 accessed as BOTH 4B and 8B -> overlap may fire; must not crash or combine into nonsense.",
+      "checks": {
+        "o0": { "max_candidates": 4, "need_offsets_in_one": [0, 8], "min_functions_in_some": 2, "need_overlap": true },
+        "o2": { "max_candidates": 5, "need_offsets_in_one": [0, 8], "min_functions_in_some": 1, "need_overlap": false }
+      }
+    },
+    "22": {
+      "name": "shadow_alias",
+      "about": "same pool[16] read as uint32[4] (+0/+4/+8/+12) AND as struct {0,8}. Different views, no declared union: detector should surface BOTH offset sets (overlap questionable — not required).",
+      "checks": {
+        "both": {
+          "max_candidates": 4,
+          "need_offsets_in_one": [0, 4, 8],
+          "min_functions_in_some": 1,
+          "need_overlap": false
+        }
+      }
+    },
+    "23": {
+      "name": "manual_iterator",
+      "about": "struct record {key@0; value@8} walked via manual cursor advance (raw +2 per step). -O0 yields {0,8}; -O2 register walkers only leak a +0 drift so no hard offset assertion there.",
+      "checks": {
+        "o0": { "max_candidates": 4, "need_offsets_in_one": [0, 8], "min_functions_in_some": 1, "need_overlap": false },
+        "o2": { "max_candidates": 4, "min_functions_in_some": 1, "need_overlap": false }
+      }
+    },
+    "24": {
+      "name": "wide_vector",
+      "about": "struct pair {lo@0; hi@8} read via a single 16-byte load covering both. Adjacent narrowing must NOT fire union overlap. offsets {0,8} present.",
+      "checks": {
+        "both": {
+          "max_candidates": 3,
+          "need_offsets_in_one": [0, 8],
+          "min_functions_in_some": 1,
+          "need_overlap": false
+        }
+      }
+    },
+    "25": {
+      "name": "three_level_chain",
+      "about": "struct message {magic@0; kind@8; seq@16; payload@24} through a 3-level dispatch chain, each level touching DISJOINT fields. THE transitive-merge discriminator: ONE candidate spanning all 3 functions. (Binja renders seq/payload partially — offsets observed {0,8,0xc,0x10}; assert the merge, not the exact payload offset.)",
+      "checks": {
+        "both": {
+          "max_candidates": 2,
+          "need_offsets_in_one": [0, 8, 16],
+          "min_functions_in_some": 3,
+          "need_overlap": false
+        }
+      }
+    }
+  }
+}

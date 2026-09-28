@@ -392,80 +392,94 @@ incomplete but collectively complete).
    (struct/union name + fields with offsets) as evidence for ratify, so names
    are grounded in the recovered types. Type recovery stays BEFORE Pass 0/ratify.
 
-### Hand-tuning binaries (`data/corpora/type_tests/`)
+### Hand-tuning corpus (`data/corpora/type_tests/`)
 
-To tune the merge aggressiveness + verdict calibration on real input, five
-STRIPPED test binaries are committed (sources in the same dir), each built at
-`-O0` and `-O2` by `scripts/build_type_test_bins.sh`:
+A 25-binary ADVERSAIRAL corpus of STRIPPED test binaries drives detector and
+verdict tuning. Sources + `-O0`/`-O2` stripped builds are committed (built by
+`scripts/build_type_test_bins.sh`); every binary has a `manifest.json` entry
+encoding the detector invariants it MUST satisfy, enforced by
+`scripts/run_type_test_bins.py --check` (a stable regression gate — EXIT 1 on
+any break — runnable whenever Binja is available).
 
-| test | what it exercises | desired verdict |
+Corpus categories (01-08 + adversarial additions 09-25):
+| # | perversion | detector/verdict invariant |
 |---|---|---|
-| `01_nested` | struct-in-struct + pointer fields, ONE type shared across 3 mutually-calling functions, each seeing a partial view | accepted → ONE nested struct |
-| `02_llist` | shared linked-list node type across find/insert/remove | accepted → ONE node struct |
-| `03_pointers` | pointer-to-pointer table, per-row entries | accepted → ONE row struct, pointer chains NOT flattened |
-| `04_union` | genuine union (same bytes as uint64 AND halves) + struct | union accepted separately, struct accepted |
-| `05_false_merge` | TWO unrelated structs passed to one generic `void*` helper (same offsets) — the over-merge trap | reject (or at most name per-type; must NOT mix widget/gadget semantics) |
-
-Three ADVERSAIRAL binaries were added (2026-09-28) specifically to break the
-naive detector, then hardened against:
-
-| test | what it breaks | detector fix it drove |
-|---|---|---|
-| `06_canary_noise` | TLS stack-canary (`fsbase+0x28`) + saved-return-addr + register-temp noise; must still find the ONE real config struct | ignore foundation-only bases; real access-width capture; drop pure-indirection bases |
-| `07_false_merge_regs` | two unrelated structs reaching a common `void*` helper via registers — over-merge trap at -O2 | registers NOT name-filtered (they carry real fields at -O2); verdict is the gate |
-| `08_union_widths` | union where the SAME offset is read as int32 AND uint64 | per-access size from Binja `expr.size` → union overlap_hint now fires |
+| 01 | nested struct shared across 3 calling functions | merge → ONE candidate |
+| 02 | shared linked-list node across find/insert/remove | merge → ONE candidate |
+| 03 | pointer-to-pointer table rows | pointer chains not flattened |
+| 04 | union read as uint64 AND halves | union overlap_hint must fire |
+| 05 | two unrelated structs → one `void*` helper | offsets present; verdict is the gate |
+| 06 | TLS stack canary + register-temp noise | canary suppressed; real struct found |
+| 07 | false merge via registers at -O2 | offsets present; verdict is the gate |
+| 08 | same offset read as int32 AND uint64 | union overlap_hint must fire |
+| 09 | two structs sharing an identical prefix | merged offsets present; verdict decides |
+| 10 | tagged union (discriminator + aliased payload) | union member detected, tag not aliased |
+| 11 | **packed unaligned struct {0,1,5,7}** | true unaligned offsets recovered |
+| 12 | bitfields packed into one dword | no nonsense multi-offset struct |
+| 13 | struct array indexed by RUNTIME var | constant field offsets still recovered |
+| 14 | intrusive list / container_of (negative offsets) | list linkage recovered; owner via offset |
+| 15 | struct shared ONLY via function-pointer callbacks | merged via type/offset bridging |
+| 16 | pointer-to-pointer-to-pointer chain | chain not flattened into garbage |
+| 17 | struct passed/returned BY VALUE | no nonsense fabrication either opt |
+| 18 | **global struct via *(const_ptr)** | global family resolved + ALL funcs merge |
+| 19 | single nonzero-offset field (+8 only) | NOT dropped by pure-indirection rule |
+| 20 | heavy memcpy/memset intrinsic noise | noise skipped; real {0,8} recovered |
+| 21 | mutually recursive structs A<->B | no crash; distinct widths respected |
+| 22 | manual type-punning (same bytes as array + struct) | both views surfaced |
+| 23 | manual cursor iterator stepping | +0/+8 recovered, no +16/+24 hallucination |
+| 24 | 16-byte wide/SIMD load across two members | no spurious union from narrowing |
+| 25 | **3-level dispatch chain, disjoint per-level fields** | transitive merge ONE candidate spanning 3 funcs |
 
 Run against Binja headless (needs `PYTHONPATH` per docs/binja-module.md §1):
 
-    python3 scripts/run_type_test_bins.py            # detector + LLM verdict
-    python3 scripts/run_type_test_bins.py --no-llm   # detector only, no LLM
+    python3 scripts/run_type_test_bins.py --check     # regression gate (all 25)
+    python3 scripts/run_type_test_bins.py             # detector + real LLM verdict
+    python3 scripts/run_type_test_bins.py --no-llm 09 # detector only, subset by number
 
 The harness degrades gracefully (prints a skip hint) when Binja is absent;
-fake-Binja tests cover the detector/verdict logic in CI. With the configured
-`[vllm]` section reachable the harness drives the REAL TypeRecoveryAgent
-verdict over real disassembly.
+fake-Binja tests cover detector logic in CI. `tests/test_corpus_integrity.py`
+guards corpus shape (every source built at both -O levels, every binary in the
+manifest, manifest well-formed) WITHOUT needing Binja.
 
-#### Hand-tuning findings (run against live Binja + DeepSeek, 2026-09-28)
+#### Detector improvements driven by the corpus (2026-09-28)
 
-Verified detector behavior on real stripped binaries (all -O0 + -O2):
-- Foundation noise eliminated: canary/`__return_addr` bases no longer appear
-  as candidates; a stack-protected binary (06) now yields a single coherent
-  candidate for the real struct + minimal churn.
-- Real access widths recovered: union tests (04/08) correctly report
-  overlapping-size aliasing (union hint) instead of 8B-everywhere.
-- Register temporaries at -O2 are NOT banned by name — they legitimately carry
-  struct field accesses (`rcx_1[1]` == offset 8); -O0 noise from the same
-  registers is suppressed by the evidence-based indirection drop, not by name
-  matching.
-- The verdict (live DeepSeek) accepts genuine unions as `kind=union` and
-  recovers the intended real struct with the complete field set (e.g. 06: 5
-  fields at offsets 0/4/8/16/31). The false-merge discriminator (07) is
-  currently ACCEPTED as a single union/struct — the exact over-merge case to
-  hand-tune: the caution bias in the prompt deliberately errs toward accept;
-  tightening it (require offset overlap *plus* call flow) is the tuning knob.
-- Residual 0-field / single-field candidates ARE still emitted into the LLM
-  (verdict correctly returns "no struct" for them — harmless but adds requests).
-  Dropping them in the detector (e.g. require >=2 distinct offsets regardless
-  of sharing) would cut LLM cost; keep as a knob, not default, since the
-  dispatcher legitimately sees only offset-0 in some functions.
+Verified on real stripped binaries (all -O0 + -O2):
+- Foundation noise eliminated: canary/`__return_addr` bases no longer appear;
+  a stack-protected binary yields only the real struct + minimal churn.
+- Real access widths recovered from Binja `expr.size` (union overlap now fires,
+  e.g. tests 04/08), instead of 8B-everywhere.
+- Register temporaries are NOT name-banned (they carry real fields at -O2);
+  -O0 register noise is suppressed by the evidence-based indirection drop
+  (offset-0 only + uniform size, non-sharing), never by name matching.
+- **GLOBAL bases are now first-class**: stripped global member loads
+  (`*(&data_40XXXX + 0)`) resolve to a page-aligned global family, and all
+  functions touching the same global merge into ONE candidate (test 18). This
+  was previously invisible — the corpus exposed the gap.
+- The verdict (live DeepSeek) accepts genuine unions as `kind=union`, recovers
+  intended structs with complete field sets; the false-merge discriminators
+  (05/07/09) are currently ACCEPTED — the over-merge hand-tune knob documented
+  above.
 
 ### Files
 - `tools/struct_detector.py` — union-find merge, `_iter_calls`, `base_names`,
   `overlap_hint`, return-flow edges; foundation-base ignore + real-size
-  capture + pure-indirection/sharing-aware drop + SSA-temp normalization.
+  capture + pure-indirection/sharing-aware drop + SSA-temp normalization +
+  global-base (CONST_PTR) resolution.
 - `tools/graph_rebuild.py` — `_bind_base_types`, union `_c_struct`.
 - `tools/bndb_writer.py` — `set_variable_type` (+ param lookup).
+- `tools/hlil_extract.py` + fake — `get_data_var_at` for global-base recovery.
 - `harness/submission.py` — `StructDefinition.kind`, `TypeVerdict`.
 - `agents/type_recovery.py` + `agents/prompts/type_recovery.txt` — verdict
   contract + cautious-merge guidance.
 - `harness/context.py` — `for_struct_candidate` sharing/overlap notes,
   `for_ratify` recovered-types section.
 - `harness/ledger.py` — recovered-type registry, `type_rejections` + migration.
-- `data/corpora/type_tests/*` + `scripts/build_type_test_bins.sh` +
-  `scripts/run_type_test_bins.py` — hand-tuning corpus (8 binaries, -O0/-O2).
-- `tests/test_type_merge.py`, `tests/test_type_recovery.py` (verdict),
-  `tests/test_detector_hardening.py` (6 adversarial-detector tests),
-  `tests/test_ledger.py` — 14 verdict/merge/detector/ledger round-trips.
+- `data/corpora/type_tests/*` (25 sources + 50 builds + `manifest.json`),
+  `scripts/build_type_test_bins.sh`, `scripts/run_type_test_bins.py` —
+  adversarial corpus + regression gate.
+- `tests/test_type_merge.py`, `tests/test_type_recovery.py`,
+  `tests/test_detector_hardening.py`, `tests/test_corpus_integrity.py`,
+  `tests/test_ledger.py` — 19 detector/verdict/corpus/ledger round-trips.
 
 ### Tunables / open items
 - `base_type_hint` on a merged candidate is the FIRST meaningful hint found

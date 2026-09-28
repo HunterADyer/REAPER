@@ -7,6 +7,7 @@ HLILExtractor). When Binja is absent it prints a clear hint and exits 0, so
 CI-ish flows do not fail on Binja-less machines.
 
 Usage:
+    python3 scripts/run_type_test_bins.py --check             # manifest regression gate
     python3 scripts/run_type_test_bins.py            # all binaries, both opt
     python3 scripts/run_type_test_bins.py 01 04      # subsets by number
     python3 scripts/run_type_test_bins.py --no-llm   # detector only (no verdict)
@@ -111,6 +112,63 @@ def _detector_only(binary: Path):
                   f"{a.function_address} @ {a.instruction_address} (base={a.base_var})")
 
 
+def _check_against_binary(binary: Path, num: str, opt: str, spec: dict) -> list:
+    """Run the detector on one binary and report whether it meets the manifest.
+
+    Returns a list of failure messages (empty == pass against this opt's
+    expectations, ignoring the other opt's key).
+    """
+    try:
+        from reaper.tools.hlil_extract import HLILExtractor
+        extractor = HLILExtractor(str(binary), str(binary.parent))
+    except Exception as exc:
+        return [f"{binary.name}: Binja unavailable ({exc})"]
+    candidates = StructAccessDetector(extractor).find_struct_accesses()
+    checks = (spec.get("checks") or {}).get(opt) or (spec.get("checks") or {}).get("both")
+    if not checks:
+        return []
+
+    failures = []
+    max_c = int(checks.get("max_candidates", 6))
+    if len(candidates) > max_c:
+        failures.append(f"{binary.name}[{opt}]: {len(candidates)} candidates > "
+                        f"max {max_c} (noise regression)")
+
+    offsets_in_one = checks.get("need_offsets_in_one") or []
+    if offsets_in_one:
+        ok = any(
+            all(int(off) in {a.offset for a in c.accesses} for off in offsets_in_one)
+            for c in candidates
+        )
+        if not ok:
+            failures.append(f"{binary.name}[{opt}]: no single candidate contains "
+                            f"offsets {offsets_in_one}")
+
+    min_offsets = int(checks.get("min_distinct_offsets", 1))
+    if min_offsets > 1:
+        ok = any(len({a.offset for a in c.accesses}) >= min_offsets for c in candidates)
+        if not ok:
+            failures.append(f"{binary.name}[{opt}]: no candidate has >= "
+                            f"{min_offsets} distinct offsets (real struct vs noise)")
+
+    min_fns = int(checks.get("min_functions_in_some", 1))
+    if min_fns > 1:
+        ok = any(len(c.functions_involved) >= min_fns for c in candidates)
+        if not ok:
+            failures.append(f"{binary.name}[{opt}]: no candidate spans "
+                            f">= {min_fns} functions (merge required)")
+    elif candidates and checks.get("min_functions_in_some", 1) == 1:
+        pass
+
+    need_overlap = bool(checks.get("need_overlap", False))
+    if need_overlap:
+        ok = any(c.overlap_hint for c in candidates)
+        if not ok:
+            failures.append(f"{binary.name}[{opt}]: expected a union overlap hint "
+                            f"but none fired")
+    return failures
+
+
 async def _with_verdict(binary: Path):
     """Run detector + TypeRecoveryAgent verdict over the binary."""
     from reaper.agents.type_recovery import TypeRecoveryAgent
@@ -158,6 +216,9 @@ def main() -> None:
     ap.add_argument("numbers", nargs="*", help="test numbers to run, e.g. 01 04")
     ap.add_argument("--no-llm", action="store_true",
                     help="detector only; skip the LLM verdict stage")
+    ap.add_argument("--check", action="store_true",
+                    help="validate detector output against manifest.json "
+                         "(regression gate); needs Binja. Ignores --no-llm.")
     ap.add_argument("--config", default=os.path.join(str(ROOT), "configs", "default.toml"),
                     help="REAPER config (vllm section) for the live verdict LLM")
     args = ap.parse_args()
@@ -166,7 +227,7 @@ def main() -> None:
     _CONFIG = _load_config(args)
 
     pattern = os.path.join(str(ROOT), "data", "corpora", "type_tests",
-                           "type_test_0*.c")
+                           "type_test_*.c")
     sources = sorted(glob.glob(pattern))
     if args.numbers:
         sources = [s for s in sources
@@ -174,6 +235,39 @@ def main() -> None:
     if not sources:
         print("no type test binaries found — run "
               "scripts/build_type_test_bins.sh first")
+        return
+
+    manifest_path = os.path.join(str(ROOT), "data", "corpora", "type_tests",
+                                 "manifest.json")
+    if args.check:
+        with open(manifest_path, "rb") as fh:
+            manifest = json.load(fh)
+        tests = manifest.get("tests", {})
+        all_failures: list[str] = []
+        total = 0
+        for src in sources:
+            num = os.path.basename(src).split("_")[2]
+            spec = tests.get(num)
+            if spec is None:
+                print(f"{num}: no manifest entry (missing spec)")
+                continue
+            for opt in ("o0", "o2"):
+                binary = src[:-2] + "_" + opt
+                if not os.path.exists(binary):
+                    continue
+                total += 1
+                failures = _check_against_binary(Path(binary), num, opt, spec)
+                if failures:
+                    all_failures.extend(failures)
+                    print(f"[FAIL] {os.path.basename(binary)}")
+                    for f in failures:
+                        print(f"       {f}")
+                else:
+                    print(f"[PASS] {os.path.basename(binary)}")
+        print(f"\n{total - len(all_failures)}/{total} detector checks passed")
+        if all_failures:
+            print(f"{len(all_failures)} failure(s)")
+            raise SystemExit(1)
         return
 
     for src in sources:

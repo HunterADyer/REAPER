@@ -149,3 +149,38 @@ def test_ssa_temp_normalized_into_family_stem():
     assert len(candidates) == 1
     assert candidates[0].base_names == {"0x7000": ["temp0"]}
     assert sorted({a.offset for a in candidates[0].accesses}) == [0, 8]
+
+
+def test_global_base_members_merge_into_one_candidate():
+    """Stripped global struct members decompile to *(const_ptr + 0) with no
+    variable base. They must be resolved to a stable global family and the
+    SAME global across functions must merge into ONE candidate."""
+    from fake_binja import const_ptr
+
+    func_a = FakeFunction(
+        0x8000, "read_version",
+        instructions=[
+            assign(var("v"), deref(const_ptr(0x404024, address=0x8001),
+                                   address=0x8001, size=4), address=0x8001),
+            assign(var("w"), deref(const_ptr(0x404030, address=0x8002),
+                                   address=0x8002, size=8), address=0x8002),
+        ],
+    )
+    func_b = FakeFunction(
+        0x8100, "read_flag",
+        instructions=[
+            assign(var("f"), deref(const_ptr(0x404028, address=0x8101),
+                                   address=0x8101, size=4), address=0x8101),
+        ],
+    )
+    extractor = FakeExtractor.with_functions([func_a, func_b])
+    detector = StructAccessDetector(extractor)
+    candidates = detector.find_struct_accesses()
+    # the three member loads share one page-aligned global family -> ONE
+    # candidate spanning both functions, with the true intra-global offsets
+    assert len(candidates) == 1, [c.base_names for c in candidates]
+    cand = candidates[0]
+    assert {int(a, 16) for a in cand.functions_involved} == {0x8000, 0x8100}
+    offsets = sorted({a.offset for a in cand.accesses})
+    assert set(offsets) == {0x24, 0x28, 0x30}, offsets
+    assert all("global_0x404000" in v[0] for v in cand.base_names.values())

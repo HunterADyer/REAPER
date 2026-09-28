@@ -159,6 +159,21 @@ def _pointee_size(type_str: str) -> int:
     return _type_size(t)
 
 
+class _GlobalBase:
+    """Minimal duck-typed stand-in for a global data object base.
+
+    Carries only ``name`` (the stable global symbol) plus an ``operation``
+    sentinel (not HLIL_VAR) so ``_root_var`` treats it as a non-var leaf and
+    :meth:`StructAccessDetector._record` reads its ``.name`` directly.
+    """
+
+    __slots__ = ("name", "operation")
+
+    def __init__(self, name: str):
+        self.name = name
+        self.operation = None
+
+
 class StructAccessDetector:
     """Scan HLIL for pointer+offset patterns indicating struct field accesses.
 
@@ -182,9 +197,15 @@ class StructAccessDetector:
 
     def _record(self, func_addr, base_expr, access: dict, instruction_addr) -> None:
         base_var = _root_var(base_expr)
-        if base_var is None or not getattr(base_var, "name", None):
-            return
-        base_name = _normalize_base_name(base_var.name)
+        if base_var is not None and getattr(base_var, "name", None):
+            base_name = _normalize_base_name(base_var.name)
+        else:
+            # no Variable root (e.g. a CONST_PTR global load): caller may have
+            # passed a stand-in whose __name__-probe we honor via .name attr.
+            direct = getattr(base_expr, "name", None)
+            if not direct:
+                return
+            base_name = _normalize_base_name(str(direct))
         if _is_ignored_base(base_name):
             return
         self._found.append((func_addr, base_name, FieldAccess(
@@ -197,7 +218,7 @@ class StructAccessDetector:
         )))
 
     def _deref_access(self, expr, func_addr, write) -> None:
-        """``*(base [+ N])`` — HLIL_DEREF (patterns 1 and 3)."""
+        """``*(base [+ N])`` — HLIL_DEREF (patterns 1, 3, and global loads)."""
         src = getattr(expr, "src", None)
         base_expr, offset = src, 0
         if src is not None and src.operation in (Op.HLIL_ADD, Op.HLIL_SUB):
@@ -208,10 +229,63 @@ class StructAccessDetector:
                     const_side, offset = cand, int(cand.constant)
             base_expr = (left if const_side is right else right) \
                 if const_side is not None else src
-        self._record(func_addr, base_expr,
-                     {"offset": offset, "size": self._access_size(expr),
-                      "access_type": "write" if write else "read"},
+        access = {"offset": offset, "size": self._access_size(expr),
+                  "access_type": "write" if write else "read"}
+        # Global struct member: `*(&global + off)` — the base is NO variable,
+        # it's a CONST_PTR into a data object. Resolve it to the containing
+        # global (start address) so all members merge into ONE global base.
+        if _root_var(base_expr) is None:
+            g = self._global_at(base_expr, write)
+            if g is not None:
+                self._record(func_addr, g["expr"],
+                             {"offset": offset + g["offset"],
+                              "size": access["size"],
+                              "access_type": access["access_type"]},
+                             _hex(getattr(expr, "address", 0)))
+                return
+        self._record(func_addr, base_expr, access,
                      _hex(getattr(expr, "address", 0)))
+
+    def _global_at(self, base_expr, write):
+        """Resolve a global data object for a variable-less base expression.
+
+        Stripped binaries rarely carry data-variable metadata, so member loads
+        decompile to ``*(&data_40XXXX + 0)`` with NO symbol for the owning
+        struct. Resolution strategy, best-effort:
+          1. If the extractor exposes ``get_data_var_at`` AND it finds a real
+             containing object with a nonzero size, use its start (accurate).
+          2. Otherwise normalize to a PAGE-ALIGNED global family: base =
+             ``global_0x<page>``, offset = address % 0x1000. Members of one
+             struct share a page and merge into ONE candidate across
+             functions; the LLM verdict protects against accidental
+             same-page conflation of unrelated globals.
+        """
+        try:
+            node = base_expr
+            if getattr(node, "operation", None) in (Op.HLIL_CONST_PTR,
+                                                    Op.HLIL_ADDRESS_OF):
+                node = getattr(node, "src", None) or node
+            c = getattr(node, "constant", None)
+            if c is None:
+                return None
+            addr = int(c)
+        except (TypeError, ValueError):
+            return None
+
+        getter = getattr(self.extractor, "get_data_var_at", None)
+        if getter is not None:
+            try:
+                info = getter(_hex(addr))
+            except Exception:
+                info = None
+            if info and int(info.get("size", 0) or 0) > 0:
+                name = info.get("name") or f"global_{_hex(info['address'])}"
+                return {"expr": _GlobalBase(name),
+                        "offset": addr - int(info.get("address", addr))}
+
+        page = addr & ~0xFFF
+        return {"expr": _GlobalBase(f"global_{_hex(page)}"),
+                "offset": addr - page}
 
     def _field_access(self, expr, func_addr, write) -> None:
         """``base -> field`` — STRUCT_FIELD / DEREF_FIELD (pattern 2)."""
@@ -524,7 +598,20 @@ class StructAccessDetector:
             for k in group[1:]:
                 union(root, k)
 
-        # Edge set 2: call-context sharing (SAME DATA TYPE across functions).
+        # Edge set 2: global bases — the SAME global data object IS the same
+        # type by definition. Every (func, global_0x...) key names the same
+        # object; unify so one candidate spans all functions touching it
+        # (stripped globals have no type metadata, but they are one object).
+        globals_by_name: dict[str, list[tuple]] = {}
+        for key in keys:
+            if key[1].startswith("global_0x"):
+                globals_by_name.setdefault(key[1], []).append(key)
+        for _gname, group in globals_by_name.items():
+            root = group[0]
+            for k in group[1:]:
+                union(root, k)
+
+        # Edge set 3: call-context sharing (SAME DATA TYPE across functions).
         for a, b in sharing_edges:
             if a in within and b in within:
                 union(a, b)
