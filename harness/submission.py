@@ -52,6 +52,34 @@ class Submission(BaseModel):
     claims: list[Claim] = []
 
 
+class NameDecision(BaseModel):
+    """One approve-or-rename decision for a single naming entity.
+
+    Produced by the xhigh RatifyNamesAgent (the deterministic Pass-1 ratify
+    pass). Each decision is EVIDENCE-GROUNDED: if a name is disapproved, the
+    agent must cite the HLIL/address range and/or graph refs that show the
+    entity's real role, then propose exactly ONE replacement. There is no
+    critic retry loop — the decision is final and applied once.
+    """
+
+    entity: Literal["function", "variable", "argument"] = "variable"
+    node_id: str                    # stable id: "0x<fn>:<name>" or "0x<fn>"
+    decision: Literal["approve", "rename"] = "approve"
+    current_name: str = ""
+    llm_name: str = ""              # pothole_case (rename only)
+    canon_name: str = ""            # readable (rename only)
+    justification: str = ""          # required on rename; optional on approve
+    evidence: list[EvidenceLink] = []  # required on rename (graph/HLIL grounding)
+    confidence: TRUTH_LEVELS = "mid_confidence"
+
+
+class RatifyOutput(BaseModel):
+    """Batched per-function output of the ratify pass (Pass 1, xhigh)."""
+
+    decisions: list[NameDecision] = []
+    function_summary: str = ""
+
+
 class CriticVerdict(BaseModel):
     truth_level: TRUTH_LEVELS  # only used when accepted=True; ignored on rejection
     accepted: bool
@@ -257,6 +285,8 @@ __all__ = [
     "ResynthesisResult",
     "MergeResult",
     "MergeDecision",
+    "NameDecision",
+    "RatifyOutput",
     "get_schema",
     "parse_response",
     "send_structured",

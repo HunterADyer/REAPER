@@ -66,7 +66,11 @@ class _Session:
     async def __aexit__(self, *exc):
         return False
 
-    def run(self, query, **params):
+    def run(self, query, parameters=None, **kwargs):
+        params = {}
+        if parameters:
+            params.update(parameters)
+        params.update(kwargs)
         return _Result(self._driver._run(query, params))
 
 class MemoryNeo4jDriver:
@@ -144,7 +148,26 @@ class MemoryNeo4jDriver:
         if "<-[:CALL]-(p:Function)" in query and "p.address AS id" in query:
             return self._in_calls(params.get("id"))
         if "Function" in query and "RETURN f.address AS address" in query:
-            return [{"address": a} for a in sorted(self._function_addresses())]
+            addrs = self._function_addresses()
+            if "pinned = false" in query or (
+                "f.pinned IS NULL OR f.pinned = false" in query
+            ):
+                addrs = self._non_pinned_addresses()
+            # Mirror the full projection when traversal_order is requested
+            # (pass1/ratify dispatchers ORDER BY f.traversal_order).
+            if "f.traversal_order AS traversal_order" in query:
+                return [{
+                    "address": a,
+                    "traversal_order": self._node_prop(a, "traversal_order"),
+                } for a in sorted(addrs)]
+            return [{"address": a} for a in sorted(addrs)]
+        if "f.pinned = true" in query or "pinned = true" in query:
+            return self._pinned()
+        if "RETURN f.name AS name" in query and "{address: $a}" in query:
+            node = self._get_function(params.get("a"))
+            return [node] if node else []
+        if "->(n:" in query and "RETURN n.id AS id" in query and "CONTAINS" in query:
+            return self._owned_nodes(params.get("a"), query)
         return []
 
 
@@ -160,27 +183,93 @@ class MemoryNeo4jDriver:
                 return {k: v for k, v in props.items() if k in _PROP_KEYS}
         return None
 
+    def _get_function(self, address):
+        """Return the raw Function node dict for a function address (exit
+        alias: legacy searches by address; keeps context reads working)."""
+        for node in self._nodes.values():
+            props = node["props"]
+            if node["label"] == "Function" and props.get("address") == address:
+                return {
+                    "name": props.get("name"),
+                    "llm_name": props.get("llm_name"),
+                    "canon_name": props.get("canon_name"),
+                }
+        return None
+
+    def _node_prop(self, address, prop):
+        for node in self._nodes.values():
+            props = node["props"]
+            if node["label"] == "Function" and props.get("address") == address:
+                return props.get(prop)
+        return None
+
+    def _owned_nodes(self, func_addr, query):
+        """Mirror the ratify for_ratify query:
+        MATCH (f:Function {address: $a})-[:CONTAINS]->(n:Variable|Argument)
+        WHERE NOT coalesce(n.pinned, false)
+        RETURN n.id, n.name, n.llm_name, n.canon_name, n.type, n.ordinal
+        ORDER BY n.ordinal
+        """
+        # the label appears as (:Variable) or (:Argument) in the query
+        m = re.search(r"->\(n:(\w+)", query)
+        label = m.group(1) if m else "Variable"
+        out = []
+        for node in self._nodes.values():
+            props = node["props"]
+            if node["label"] != label:
+                continue
+            if props.get("pinned"):
+                continue
+            out.append({
+                "id": props.get("id"),
+                "name": props.get("name"),
+                "llm_name": props.get("llm_name"),
+                "canon_name": props.get("canon_name"),
+                "type": props.get("type"),
+                "ordinal": props.get("ordinal"),
+            })
+        out.sort(key=lambda r: r.get("ordinal") or 0)
+        return out
+
     def _run_merge(self, query: str, params: dict) -> list[dict]:
-        match = re.search(r"SET\s+n\.(\w+)\s*=\s*\$value", query)
-        field = match.group(1) if match else "llm_name"
+        # Support the multi-field rename form (ratify/pass1 merge):
+        #   MERGE (n {id: $id}) SET n.llm_name = $llm, n.canon_name = $canon
+        multi = re.findall(r"SET\s+n\.(\w+)\s*=\s*\$(\w+)|,\s*n\.(\w+)\s*=\s*\$(\w+)", query)
+        multi = [(a or c, b or d) for a, b, c, d in multi]
         node_id = params.get("id")
-        value = params.get("value")
-        if ":Function" in query:
-            entry = self._nodes.setdefault(
-                node_id, {"label": "Function", "props": {"address": node_id}}
-            )
-        elif ":Variable" in query:
-            entry = self._nodes.setdefault(
-                node_id, {"label": "Variable", "props": {"id": node_id}}
-            )
+        # MERGE must UPSERT the existing node by its stable id/address (a bare
+        # 'MERGE (n {id: $id})' targets the SAME node across labels).
+        entry = None
+        if node_id is not None:
+            for node in self._nodes.values():
+                props = node["props"]
+                if props.get("id") == node_id or props.get("address") == node_id:
+                    entry = node
+                    break
+        if entry is None:
+            if ":Function" in query:
+                entry = self._nodes.setdefault(
+                    node_id, {"label": "Function", "props": {"address": node_id}}
+                )
+            elif ":Variable" in query:
+                entry = self._nodes.setdefault(
+                    node_id, {"label": "Variable", "props": {"id": node_id}}
+                )
+            else:
+                label = re.search(r":(\w+)", query)
+                label = label.group(1) if label else "Function"
+                key = "address" if label == "Function" else "id"
+                entry = self._nodes.setdefault(
+                    node_id, {"label": label, "props": {key: node_id}}
+                )
+        if multi:
+            for field, pname in multi:
+                if pname in params:
+                    entry["props"][field] = params[pname]
         else:
-            label = re.search(r":(\w+)", query)
-            label = label.group(1) if label else "Function"
-            key = "address" if label == "Function" else "id"
-            entry = self._nodes.setdefault(
-                node_id, {"label": label, "props": {key: node_id}}
-            )
-        entry["props"][field] = value
+            match = re.search(r"SET\s+n\.(\w+)\s*=\s*\$value", query)
+            field = match.group(1) if match else "llm_name"
+            entry["props"][field] = params.get("value")
         self.writes.append((query, dict(params)))
         return []
 
@@ -255,6 +344,14 @@ class MemoryNeo4jDriver:
             node["props"]["address"]
             for node in self._nodes.values()
             if node["label"] == "Function"
+        ]
+
+    def _non_pinned_addresses(self):
+        return [
+            node["props"]["address"]
+            for node in self._nodes.values()
+            if node["label"] == "Function"
+            and not node["props"].get("pinned")
         ]
 
 

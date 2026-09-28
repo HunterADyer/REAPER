@@ -39,6 +39,7 @@ from reaper.harness.context import ContextAssembler
 from reaper.harness.shadow import ShadowCopyManager
 from reaper.harness.merge_agent import MergeAgent
 from reaper.harness.pass1_dispatcher import Pass1Dispatcher
+from reaper.harness.ratify_dispatcher import RatifyDispatcher
 from reaper.harness.pass2_dispatcher import Pass2Dispatcher
 from reaper.harness.scheduler import Scheduler
 from reaper.harness.investigation_loop import InvestigationLoop
@@ -82,10 +83,17 @@ async def _phase_event(run_id: str, phase: int, status: str, **extra) -> None:
 
 async def run_pipeline(binary_path: str, config_path: str, run_id: str = "default",
                        phases=None):
-    """Run the selected pipeline phases (default all of 2-7).
+    """Run the selected pipeline phases (default deterministic 2-pass RE).
 
-    Phases: 2 graph build · 3 harness init · 4 type recovery · 5 Pass 1 ·
-            6 Pass 2 · 7 investigation + resynthesis (+ export).
+    Phases: 2 graph build · 3 harness init · 4 type recovery · 5 Pass 0
+    (lowest-effort provisional-name sweep) · 6 Pass 1 = deterministic RATIFY
+    (xhigh, evidence-grounded approve/rename decisions published to the ledger,
+    rename exactly once — no critic) · 7 OPTIONAL deep investigation +
+    resynthesis (only when explicitly requested).
+
+    The DEFAULT is the deterministic 2-pass: phases 2,3,4,5,6. Phase 7 is
+    opt-in via ``--phases 2,3,4,5,6,7`` for the old critic-driven deep dive;
+    it is not needed for a completed RE stage.
 
     ``--phases`` enables resumability: Neo4j + SQLite state persist across
     invocations, so a crashed live run can be resumed by re-running only the
@@ -93,7 +101,7 @@ async def run_pipeline(binary_path: str, config_path: str, run_id: str = "defaul
     init (3) is implied by any later phase.
     """
     if phases is None:
-        phases = frozenset({2, 3, 4, 5, 6, 7})
+        phases = frozenset({2, 3, 4, 5, 6})
     else:
         phases = frozenset(int(p) for p in (phases or []))
     config = load_config(config_path)
@@ -229,22 +237,32 @@ async def run_pipeline(binary_path: str, config_path: str, run_id: str = "defaul
                 await ledger.register_functions_from_graph()
                 await _phase_event(run_id, 4, "done")
 
-            # Phase 5: Pass 1
+            # Phase 5: Pass 0 — LOWEST-EFFORT provisional-name sweep.
+            # The old Pass-1 machinery (minimal thinking): variables → args →
+            # summary per function, applied immediately, no critic. This seed
+            # only needs to be plausible; the xhigh ratify pass fixes it.
             if 5 in phases:
                 await _phase_event(run_id, 5, "start")
                 await Pass1Dispatcher(llm, neo4j_driver, context_asm,
                                       bndb_writer, ledger, tracer, config).run()
                 await _phase_event(run_id, 5, "done")
 
-            # Phase 6: Pass 2
+            # Phase 6: Pass 1 — DETERMINISTIC RATIFY (xhigh). One deep pass
+            # where the ratifier explores function chains and approves or
+            # renames every function/variable/argument name, grounding each
+            # decision in cited graph/HLIL evidence; decisions are PUBLISHED to
+            # the ledger (name_decisions table) and renames applied exactly
+            # once. No critic loop — this is the final RE naming decision
+            # (VR refines claims later with better tools).
             if 6 in phases:
                 await _phase_event(run_id, 6, "start")
-                await Pass2Dispatcher(llm, neo4j_driver, context_asm, shadow_mgr,
-                                      merge, bndb_writer, ledger, todo, tracer,
-                                      config).run()
+                await RatifyDispatcher(llm, neo4j_driver, context_asm,
+                                       bndb_writer, ledger, tracer, config).run()
                 await _phase_event(run_id, 6, "done")
 
-            # Phase 7: Investigation + Resynthesis
+            # Phase 7 (OPT-IN): the old critic-driven investigation +
+            # resynthesis deep dive. Not required for a completed deterministic
+            # RE; only runs when explicitly requested (--phases 2,3,4,5,6,7).
             if 7 in phases:
                 await _phase_event(run_id, 7, "start")
                 scheduler = Scheduler(llm, todo, context_asm, tracer, config)
@@ -258,6 +276,21 @@ async def run_pipeline(binary_path: str, config_path: str, run_id: str = "defaul
                     resynth_agent, inv_loop, todo, ledger, neo4j_driver,
                     context_asm, tracer, config)
                 complete = await resynth_loop.run()
+
+            # Completion for the deterministic 2-pass: the ratify pass IS the
+            # completion signal (a decision published for every renamable
+            # function). Pass-2/investigation no longer gate completion.
+            if 6 in phases and 7 not in phases:
+                if ledger is not None:
+                    try:
+                        cov = await ledger.decision_coverage_stats()
+                        complete = (
+                            cov.get("renamable_functions", 0) > 0
+                            and cov.get("with_decisions", 0)
+                            == cov.get("renamable_functions", 0)
+                        )
+                    except Exception:
+                        log.exception("run: decision_coverage_stats failed")
 
             # Final writeback
             bndb_writer.save()
@@ -352,11 +385,14 @@ def main() -> None:  # noqa: D103 — console-script entry point (async wrapper)
     parser.add_argument("--config", default="configs/default.toml")
     parser.add_argument("--run-id", required=True)
     parser.add_argument(
-        "--phases", default="2,3,4,5,6,7",
+        "--phases", default="2,3,4,5,6",
         help="comma-separated phases to run: 2 graph build, 3 harness init, "
-             "4 type recovery, 5 Pass 1, 6 Pass 2, 7 investigation+resynthesis. "
-             "Persisted state enables resumption (e.g. '--phases 7' after a "
-             "crash, or '--phases 3' to re-export the evaluation report).",
+             "4 type recovery, 5 Pass 0 (low-effort provisional sweep), "
+             "6 Pass 1 deterministic RATIFY (xhigh, evidence-grounded, no "
+             "critic), 7 OPTIONAL deep investigation+resynthesis. Default is "
+             "the deterministic 2-pass (2,3,4,5,6). Persisted state enables "
+             "resumption (e.g. '--phases 7' after a crash, or '--phases 3' to "
+             "re-export the evaluation report).",
     )
     args = parser.parse_args()
     phases = [p.strip() for p in args.phases.split(",") if p.strip()]

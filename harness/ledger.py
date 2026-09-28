@@ -11,6 +11,7 @@ back).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,6 +76,24 @@ CREATE TABLE IF NOT EXISTS struct_fields (
     confidence TEXT,
     FOREIGN KEY (struct_name) REFERENCES structs(name) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS name_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    function_address TEXT NOT NULL,
+    entity TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    decision TEXT CHECK(decision IN ('approve','rename')) NOT NULL,
+    current_name TEXT,
+    llm_name TEXT,
+    canon_name TEXT,
+    justification TEXT,
+    confidence TEXT,
+    evidence_json TEXT,
+    submitted_by TEXT,
+    created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_name_decisions_fn ON name_decisions(function_address);
+CREATE INDEX IF NOT EXISTS idx_name_decisions_node ON name_decisions(node_id);
 """
 
 
@@ -452,6 +471,92 @@ class Ledger:
                 "confidence": r[5],
             })
         return out
+
+    # -- name decisions (deterministic Pass-1 ratify) --------------------------
+
+    async def record_name_decision(self, decision: dict) -> int:
+        """Publish one approve/rename decision to the ledger.
+
+        Idempotent by node_id + decision-subset: re-running the ratify pass for
+        the same node replaces the prior decision rather than stacking rows.
+        """
+        node_id = decision.get("node_id")
+        if not node_id:
+            return 0
+        db = self._require_ready()
+        now = _now()
+        async with self._write_lock:
+            await db.execute(
+                "DELETE FROM name_decisions WHERE node_id = ?", (node_id,)
+            )
+            cursor = await db.execute(
+                "INSERT INTO name_decisions (function_address, entity, node_id, "
+                "decision, current_name, llm_name, canon_name, justification, "
+                "confidence, evidence_json, submitted_by, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    decision.get("function_address", ""),
+                    decision.get("entity", "variable"),
+                    node_id,
+                    decision.get("decision", "approve"),
+                    decision.get("current_name"),
+                    decision.get("llm_name"),
+                    decision.get("canon_name"),
+                    decision.get("justification"),
+                    decision.get("confidence"),
+                    json.dumps(decision.get("evidence", []), default=str),
+                    decision.get("submitted_by", "ratify"),
+                    now,
+                ),
+            )
+            await db.commit()
+            return int(cursor.lastrowid)
+
+    async def get_name_decisions(self, function_address: str = "",
+                                 limit: int = 1000) -> list[dict]:
+        """Return published decisions, optionally filtered by function."""
+        db = self._require_ready()
+        sql = ("SELECT id, function_address, entity, node_id, decision, "
+               "current_name, llm_name, canon_name, justification, confidence, "
+               "evidence_json, submitted_by, created_at FROM name_decisions")
+        params: tuple = ()
+        if function_address:
+            sql += " WHERE function_address = ?"
+            params = (function_address,)
+        sql += " ORDER BY id DESC LIMIT ?"
+        cursor = await db.execute(sql, params + (limit,))
+        rows = await cursor.fetchall()
+        out = []
+        for r in rows:
+            out.append({
+                "id": r[0], "function_address": r[1], "entity": r[2],
+                "node_id": r[3], "decision": r[4], "current_name": r[5],
+                "llm_name": r[6], "canon_name": r[7], "justification": r[8],
+                "confidence": r[9],
+                "evidence": json.loads(r[10] or "[]"),
+                "submitted_by": r[11], "created_at": r[12],
+            })
+        return out
+
+    async def decision_coverage_stats(self) -> dict:
+        """How many (valid, non-pinned) functions have at least one decision
+        published by the ratify pass — the deterministic completion signal."""
+        scope = await self._graph_function_addresses(include_pinned=False)
+        db = self._require_ready()
+        covered = 0
+        for addr in scope:
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM name_decisions WHERE function_address = ?",
+                (addr,),
+            )
+            row = await cursor.fetchone()
+            if row and row[0] > 0:
+                covered += 1
+        return {
+            "renamable_functions": len(scope),
+            "with_decisions": covered,
+            "without_decisions": len(scope) - covered,
+        }
 
 
 __all__ = ["Ledger"]

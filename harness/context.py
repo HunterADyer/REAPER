@@ -110,6 +110,103 @@ class ContextAssembler:
 
         return self._finalize("\n\n".join(parts))
 
+    async def for_ratify(
+        self,
+        func_address: str,
+        include_callees: bool = True,
+        include_callers: bool = True,
+    ) -> str:
+        """Assemble EVIDENCE-GROUNDED chain context for the ratify pass.
+
+        Unlike for_function (which only shows extractor variable names that may
+        be stale vs the graph), this includes the CURRENT graph names for the
+        function and every variable/argument node — the provisional Pass-0
+        names the ratifier must approve or rename — plus callee/caller chain
+        context, string refs, and pinned-symbol grounding. The target entities
+        are NOT highlighted (the ratifier reviews ALL names, not one).
+        """
+        parts: list[str] = []
+        fn = await self._function_node(func_address)
+        current_name = (fn or {}).get("canon_name") or (fn or {}).get("llm_name") \
+            or (fn or {}).get("name") or func_address
+        parts.append(f"Function: {current_name} @ {func_address}")
+
+        sig = self._signature_text(func_address)
+        if sig:
+            parts.append(f"Signature: {sig}")
+
+        hl = self._hlil_text(func_address)
+        if hl:
+            parts.append(f"HLIL ({func_address}):\n{hl}")
+
+        entities = await self._ratify_entities(func_address)
+        if entities:
+            lines = []
+            for e in entities:
+                display = e.get("canon_name") or e.get("llm_name") or e.get("name") or "?"
+                lines.append(
+                    f"  [{e.get('kind')}] {e.get('node_id')}  current={display}  "
+                    f"type={e.get('type') or '?'}"
+                )
+            parts.append("Current graph names (approve or rename these):\n" +
+                         "\n".join(lines))
+
+        refs = self._safe_extractor_list(self.extractor.get_string_refs, func_address)
+        if refs:
+            parts.append(
+                "String refs:\n"
+                + "\n".join(f'  {r.get("address")}: "{r.get("value")}"' for r in refs)
+            )
+
+        pinned = await self._pinned_context()
+        if pinned:
+            parts.append(pinned)
+        if include_callees:
+            callees = await self._callees_section(func_address)
+            if callees:
+                parts.append(callees)
+        if include_callers:
+            callers = await self._callers_section(func_address)
+            if callers:
+                parts.append(callers)
+
+        return self._finalize("\n\n".join(parts))
+
+    async def _function_node(self, func_address: str) -> dict | None:
+        rows = await self._query(
+            "MATCH (f:Function {address: $a}) "
+            "RETURN f.name AS name, f.llm_name AS llm_name, "
+            "f.canon_name AS canon_name",
+            func_address,
+        )
+        return rows[0] if rows else None
+
+    async def _ratify_entities(self, func_address: str) -> list[dict]:
+        """Query all naming entities owned by a function from the graph.
+
+        Returns [{kind, node_id, name, llm_name, canon_name, type}] for
+        Argument + Variable nodes (skip pinned) plus the Function itself."""
+        out: list[dict] = []
+        for label in ("Argument", "Variable"):
+            rows = await self._query(
+                f"MATCH (f:Function {{address: $a}})-[:CONTAINS]->(n:{label}) "
+                "WHERE NOT coalesce(n.pinned, false) "
+                "RETURN n.id AS id, n.name AS name, n.llm_name AS llm_name, "
+                "n.canon_name AS canon_name, n.type AS type, n.ordinal AS ordinal "
+                "ORDER BY n.ordinal",
+                func_address,
+            )
+            for r in rows:
+                out.append({
+                    "kind": "argument" if label == "Argument" else "variable",
+                    "node_id": r.get("id"),
+                    "name": r.get("name"),
+                    "llm_name": r.get("llm_name"),
+                    "canon_name": r.get("canon_name"),
+                    "type": r.get("type"),
+                })
+        return [e for e in out if e.get("node_id")]
+
     async def for_variable(
         self,
         func_address: str,

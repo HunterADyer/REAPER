@@ -53,7 +53,8 @@ GUI_LOG = REPO_ROOT / "data" / "gui.log"
 
 DEFAULT_BINARY = str(REPO_ROOT / "eval" / "cjson" / "cjson_test")
 DEFAULT_RUN_ID = "cjson_001"
-DEFAULT_PHASES = "2,3,4,5,6,7"
+# Deterministic 2-pass RE: 5 = low-effort provisional sweep, 6 = xhigh ratify.
+DEFAULT_PHASES = "2,3,4,5,6"
 
 
 def load_config(path: str | None = None) -> dict:

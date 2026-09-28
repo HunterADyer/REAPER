@@ -49,9 +49,20 @@ model = "deepseek"
 #                                 deep critic supervises downstream claims
 #   minimal (no downstream truth gate; protect shared serialized :8035 budget):
 #     pass1_rename, scheduler -> "minimal"
+#
+# RE PHASE MODEL (2026-09-28, deterministic 2-pass — critic/investigation
+# retired from the default path):
+#   Phase 5 = Pass 0 low-effort provisional sweep (variables->args->summary,
+#             minimal thinking). Only needs to be plausible.
+#   Phase 6 = Pass 1 deterministic RATIFY at "ratify" (xhigh): one deep pass
+#             that approves-or-renames every function/variable/argument name,
+#             grounds each decision in cited graph/HLIL evidence, publishes to
+#             the ledger name_decisions table, and renames exactly once. No
+#             critic retry, no investigation/resynthesis (Phase 7 is opt-in).
 pass0_type_recovery = "high"
 recovery_followup = "xhigh"
 pass1_rename = "minimal"
+ratify = "xhigh"
 pass2_review = "high"
 critic = "xhigh"
 investigation = "high"
