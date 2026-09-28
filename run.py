@@ -208,13 +208,16 @@ async def run_pipeline(binary_path: str, config_path: str, run_id: str = "defaul
                     for candidate in pending:
                         processed.add(candidate.candidate_id)
                         try:
-                            struct_def = await type_agent.run(
+                            verdict = await type_agent.run(
                                 candidate, follow_up=(round_no > 0))
                         except Exception:
                             log.exception("run: type recovery failed for %s",
-                                         candidate.candidate_id)
+                                          candidate.candidate_id)
                             continue
-                        if not struct_def:
+                        if not verdict.accepted:
+                            continue
+                        struct_def = type_agent.to_struct_def(verdict)
+                        if struct_def is None:
                             continue
                         try:
                             await rebuilder.apply_struct(

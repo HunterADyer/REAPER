@@ -64,7 +64,10 @@ class TypeRecoveryCase(HeavyCase):
 
     def scripted_responses(self, fx: Fixtures) -> list[str]:
         return [json.dumps({
+            "accepted": True,
+            "rejection_reason": "",
             "struct_name": "value_node",
+            "kind": "struct",
             "fields": [
                 {"offset": 0, "name": "next", "type_str": "struct value_node*",
                  "size": 8, "confidence": "high_confidence"},
@@ -77,17 +80,22 @@ class TypeRecoveryCase(HeavyCase):
 
     async def run_case(self, fx: Fixtures, llm) -> None:
         agent = TypeRecoveryAgent(llm, fx.context_asm, fx.config)
-        result = await agent.run(fx.extra["candidate"])
-        fx.extra["struct_def"] = (result.model_dump() if result is not None else None)
-        if result is not None and result.fields:
+        verdict = await agent.run(fx.extra["candidate"])
+        fx.extra["verdict_accepted"] = bool(verdict.accepted)
+        struct_def = agent.to_struct_def(verdict)
+        fx.extra["struct_def"] = (
+            struct_def.model_dump() if struct_def is not None else None)
+        if struct_def is not None:
             # The pipeline persists each applied StructDefinition for export
             # (run.py Phase 4) — replicate that exact call.
-            await fx.ledger.record_struct(result)
+            await fx.ledger.record_struct(struct_def)
         fx.extra["ledger_structs"] = await fx.ledger.get_structs()
         fx.extra["claims_a"] = await fx.ledger.get_claims(FUNC_A)
 
     async def assert_expected(self, fx: Fixtures) -> list:
         checks = []
+        if not fx.extra.get("verdict_accepted"):
+            checks.append(self.fail("type-recovery verdict rejected the merge"))
         struct_def = fx.extra.get("struct_def")
         if not struct_def or not struct_def.get("fields"):
             checks.append(self.fail("TypeRecoveryAgent returned no struct"))

@@ -376,30 +376,65 @@ incomplete but collectively complete).
    code in the BNDB, never left as a dangling user type. `_find_var` now also
    searches `parameter_vars` (a shared base is legitimately an argument).
 
-4. **Naming-pass interop** — `ledger.get_recovered_types()` + a `kind` column
+4. **LLM verdict gates the merge** — `TypeRecoveryAgent.run` now returns a
+   `TypeVerdict` (`accepted`, `rejection_reason`, `struct_name`, `kind`,
+   `fields`). Recovered types are only applied/renamed when the verdict
+   ACCEPTS the shared-data-type claim. Rejected candidates are logged to the
+   `type_rejections` ledger table (never applied). Cautious-merge bias: an
+   ACCEPTED merge retags every involved base — expensive to undo downstream
+   (a VR/verify model struggles to un-split a wrongly-merged struct) — while a
+   MISSED merge is trivially fixed in a later pass, so the prompt only rejects
+   on incoherent accesses, never on partial-field uncertainty.
+
+5. **Naming-pass interop** — `ledger.get_recovered_types()` + a `kind` column
    (with an ALTER migration guard for existing DBs) expose recovered layouts;
    `for_ratify` renders a "Recovered types bound to this function" section
    (struct/union name + fields with offsets) as evidence for ratify, so names
    are grounded in the recovered types. Type recovery stays BEFORE Pass 0/ratify.
+
+### Hand-tuning binaries (`data/corpora/type_tests/`)
+
+To tune the merge aggressiveness + verdict calibration on real input, five
+STRIPPED test binaries are committed (sources in the same dir), each built at
+`-O0` and `-O2` by `scripts/build_type_test_bins.sh`:
+
+| test | what it exercises | desired verdict |
+|---|---|---|
+| `01_nested` | struct-in-struct + pointer fields, ONE type shared across 3 mutually-calling functions, each seeing a partial view | accepted → ONE nested struct |
+| `02_llist` | shared linked-list node type across find/insert/remove | accepted → ONE node struct |
+| `03_pointers` | pointer-to-pointer table, per-row entries | accepted → ONE row struct, pointer chains NOT flattened |
+| `04_union` | genuine union (same bytes as uint64 AND halves) + struct | union accepted separately, struct accepted |
+| `05_false_merge` | TWO unrelated structs passed to one generic `void*` helper (same offsets) — the over-merge trap | reject (or at most name per-type; must NOT mix widget/gadget semantics) |
+
+Run against Binja headless (needs `PYTHONPATH` per docs/binja-module.md §1):
+
+    python3 scripts/run_type_test_bins.py            # detector + LLM verdict
+    python3 scripts/run_type_test_bins.py --no-llm   # detector only, no LLM
+
+The harness degrades gracefully (prints a skip hint) when Binja is absent;
+fake-Binja tests cover the verdict logic in CI.
 
 ### Files
 - `tools/struct_detector.py` — union-find merge, `_iter_calls`, `base_names`,
   `overlap_hint`, return-flow edges.
 - `tools/graph_rebuild.py` — `_bind_base_types`, union `_c_struct`.
 - `tools/bndb_writer.py` — `set_variable_type` (+ param lookup).
-- `harness/submission.py` — `StructDefinition.kind`.
-- `agents/prompts/type_recovery.txt` — SHARED DATA TYPE + union instructions.
+- `harness/submission.py` — `StructDefinition.kind`, `TypeVerdict`.
+- `agents/type_recovery.py` + `agents/prompts/type_recovery.txt` — verdict
+  contract + cautious-merge guidance.
 - `harness/context.py` — `for_struct_candidate` sharing/overlap notes,
   `for_ratify` recovered-types section.
-- `harness/ledger.py` — recovered-type registry + migration guard.
-- `tests/test_type_merge.py` — 7 tests (merge, return-flow, union hint,
-  type binding, union emission).
+- `harness/ledger.py` — recovered-type registry, `type_rejections` + migration.
+- `data/corpora/type_tests/*` + `scripts/build_type_test_bins.sh` +
+  `scripts/run_type_test_bins.py` — hand-tuning corpus.
+- `tests/test_type_merge.py`, `tests/test_type_recovery.py` (verdict),
+  `tests/test_ledger.py` — 8 verdict/merge/ledger tests.
 
 ### Tunables / open items
 - `base_type_hint` on a merged candidate is the FIRST meaningful hint found
   among members; if a real binary shows conflicting hints we may need a
   confidence-weighted pick.
-- The merged candidate is the sole authority for the recovered field set and
-  the agent is instructed NEVER to split a SHARED candidate; if a live run
-  over-merges, the retagging contract makes it easy to loosen (require offset
-  overlap *plus* call flow) — confirmed by the user to ship this way first.
+- The merged candidate + verdict together are the authority for the recovered
+  field set; the agent is instructed NEVER to split a SHARED candidate. If a
+  live run over-merges on test 05, the rejection path + `type_rejections` log
+  are exactly the hand-tuning loop to calibrate against.

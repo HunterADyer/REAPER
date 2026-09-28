@@ -152,6 +152,51 @@ class StructDefinition(BaseModel):
     fields: list[StructField]
 
 
+class TypeVerdict(BaseModel):
+    """LLM verdict on a type-recovery candidate (the cross-function sharing
+    gate, design § run-audit.md §10).
+
+    A candidate may span multiple functions because the detector followed
+    call-context evidence and concluded they share ONE data type. The verdict
+    decides whether that merge is CORRECT and, if so, names it.
+
+    Acceptance is deliberately cautious: an ACCEPTED merge retags struct
+    pointer types onto every involved base across all functions — expensive to
+    undo if wrong. REJECTING an over-merge (splitting back) is deferred to a
+    later pass. A missed merge is trivially fixed later. So the bias is:
+    when in doubt, accept the merge but flag uncertainty, rather than reject
+    (see prompt: 'wrongly-merged ... harder for a VR llm to get past').
+    """
+
+    accepted: bool = Field(
+        default=True,
+        description="true when the functions really do share ONE data type "
+        "and the merge should stand; false when they are different types and "
+        "must stay separate",
+    )
+    rejection_reason: str = Field(
+        default="",
+        description="when accepted=false, why the candidate should be split "
+        "(e.g. unrelated offsets, different base types, two different structs "
+        "coincidentally passed to the same parameter)",
+    )
+    struct_name: str = Field(
+        default="",
+        description="proposed canonical pothole_case name for the shared "
+        "type, e.g. 'cjson_node'. REQUIRED when accepted=true.",
+    )
+    kind: str = Field(
+        default="struct",
+        description="'struct' or 'union' when accepted=true",
+    )
+    fields: list[StructField] = Field(
+        default_factory=list,
+        description="the UNION of all fields across every involved function "
+        "— the COMPLETE layout, never a per-function subset. REQUIRED when "
+        "accepted=true; MAY be empty when accepted=false ('no struct').",
+    )
+
+
 class CriticOutcome(BaseModel):
     """Returned by harness evaluate_claim() to caller (not an LLM output)."""
 
@@ -288,6 +333,7 @@ __all__ = [
     "MergedClaim",
     "StructField",
     "StructDefinition",
+    "TypeVerdict",
     "FunctionSummary",
     "ResynthesisResult",
     "MergeResult",

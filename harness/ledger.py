@@ -78,6 +78,15 @@ CREATE TABLE IF NOT EXISTS struct_fields (
     FOREIGN KEY (struct_name) REFERENCES structs(name) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS type_rejections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    candidate_id TEXT NOT NULL,
+    base_type_hint TEXT,
+    rejection_reason TEXT,
+    functions_involved TEXT,
+    created_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS name_decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     function_address TEXT NOT NULL,
@@ -513,6 +522,55 @@ class Ledger:
                 for r in await fc.fetchall()
             ]
         return types
+
+    # -- type-rejection log (type-recovery verdicts, hand-tuning) ---------------
+
+    async def record_type_rejection(self, rejection: dict) -> int:
+        """Record one rejected type-recovery candidate for hand-tuning.
+
+        Rejections are never applied/renamed; this log exists so the merge
+        aggressiveness can be tuned on real binaries (an over-merge must be
+        caught by the verdict; under-merges are easy to fix later).
+        """
+        db = self._require_ready()
+        now = _now()
+        import json as _json
+        async with self._write_lock:
+            cursor = await db.execute(
+                "INSERT INTO type_rejections "
+                "(candidate_id, base_type_hint, rejection_reason, "
+                " functions_involved, created_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    rejection.get("candidate_id"),
+                    rejection.get("base_type_hint"),
+                    rejection.get("rejection_reason"),
+                    _json.dumps(list(rejection.get("functions_involved") or [])),
+                    now,
+                ),
+            )
+            await db.commit()
+            return int(cursor.lastrowid)
+
+    async def get_type_rejections(self) -> list[dict]:
+        """Return every recorded type-recovery rejection (for tuning)."""
+        db = self._require_ready()
+        cursor = await db.execute(
+            "SELECT candidate_id, base_type_hint, rejection_reason, "
+            "functions_involved, created_at "
+            "FROM type_rejections ORDER BY id"
+        )
+        rows = await cursor.fetchall()
+        import json as _json
+        return [
+            {
+                "candidate_id": r[0],
+                "base_type_hint": r[1],
+                "rejection_reason": r[2],
+                "functions_involved": _json.loads(r[3]) if r[3] else [],
+                "created_at": r[4],
+            }
+            for r in rows
+        ]
 
     # -- name decisions (deterministic Pass-1 ratify) --------------------------
 

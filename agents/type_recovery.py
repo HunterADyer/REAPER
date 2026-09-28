@@ -1,32 +1,40 @@
 """Type recovery agent — Deliverable 4.2.
 
-Takes StructCandidate groups (4.1), infers a struct layout via the LLM, and
-records a claim in the ledger. Runs as part of pass 0 (type recovery), BEFORE
-Pass 1 / Pass 2 / 3.x shadow & merge.
+Takes StructCandidate groups (4.1) — which may span MULTIPLE functions via
+call-context sharing — and returns a TypeVerdict: does the LLM ACCEPT that
+these functions share one data type, and if so what is its complete layout
+and proposed name? Runs as part of phase 4 (type recovery), BEFORE
+Pass 0 / ratify.
 
-Output: ``StructDefinition`` (from reaper.harness.submission, shared protocol).
-``run()`` returns ``None`` when the LLM concludes no struct exists (empty
-``fields``), so the caller can skip the rebuild for that candidate.
+Verdict vs the old StructDefinition contract: acceptance is the GATE. The
+detector may over-merge (union-find over call-flow is aggressive); the verdict
+is where a careful reverse engineer decides whether the shared-data-type claim
+holds. The verdict commits the name + complete unioned field set ONLY when
+``accepted``. Rejected candidates are recorded to the ledger rejections table
+for hand-tuning (never applied, never renamed).
 
 Thinking budget by ROUND (audit 2026-09-27): the initial pass-0 recovery runs
-at ``pass0_type_recovery`` ("high" — struct layouts are load-bearing: they feed
-metric 5 and every later field rename). Any FOLLOW-UP recovery round (a struct
+at ``pass0_type_recovery`` ("high"). Any FOLLOW-UP recovery round (a struct
 applied in an earlier round exposes NEW struct-access patterns) runs at
-``recovery_followup`` ("max" = xhigh) via ``run(..., follow_up=True)`` — the
-deep refinement work gets the maximum budget. See run.py Phase 4 for the
-fixed-point driver that selects the round.
+``recovery_followup`` ("max" = xhigh) via ``run(..., follow_up=True)``. See
+run.py Phase 4 for the fixed-point driver that selects the round.
 
 Claim discipline: one claim per involved function, truth_level="inferred" for
-v1 (the design says the critic may revisit it later; for the first
-implementation we set it directly).
+v1 (the design says the critic may revisit it later).
 """
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Optional
 
-from reaper.harness.submission import StructDefinition, get_schema, parse_response
+from reaper.harness.submission import (
+    StructDefinition,
+    TypeVerdict,
+    get_schema,
+    parse_response,
+)
 
 log = logging.getLogger(__name__)
 
@@ -48,19 +56,26 @@ class TypeRecoveryAgent:
     def _ledger(self):
         return getattr(self.context_asm, "ledger", None)
 
-    async def run(self, candidate, *, follow_up: bool = False) -> StructDefinition | None:
-        """Assemble context, call the LLM, return a parsed StructDefinition.
+    async def run(
+        self,
+        candidate,
+        *,
+        follow_up: bool = False,
+    ) -> TypeVerdict:
+        """Assemble context, call the LLM, return a parsed TypeVerdict.
 
         ``follow_up=False`` (pass 0 / first round) uses the
         ``pass0_type_recovery`` level (default "high"). ``follow_up=True``
         (a refinement round after a prior struct application exposed new
         access patterns) uses ``recovery_followup`` (default "max" = xhigh).
 
-        Returns ``None`` (no struct inferred) only when the model emits an
-        empty fields list. A claim is recorded per involved function with
-        truth_level "inferred" for v1.
+        The verdict carries ``accepted``; when accepted a claim is recorded per
+        involved function with truth_level "inferred". When rejected, a row is
+        recorded in the ledger's type_rejections table and nothing is applied
+        (the caller must check ``verdict.accepted`` before rebinding).
         """
         session_id = f"type_recovery_{candidate.candidate_id}"
+        context = None
         try:
             await self.llm.create_session(session_id, self.prompt)
             context = await self.context_asm.for_struct_candidate(candidate)
@@ -73,17 +88,47 @@ class TypeRecoveryAgent:
                 session_id,
                 context,
                 thinking_level=thinking_level,
-                structured_output=get_schema(StructDefinition),
+                structured_output=get_schema(TypeVerdict),
             )
-            result = parse_response(StructDefinition, response)
+            verdict = parse_response(TypeVerdict, response)
         finally:
             self.llm.destroy_session(session_id)
 
-        if not result.fields:
-            return None
+        if not verdict.accepted:
+            await self._record_rejection(candidate, verdict)
+            return verdict
 
-        await self._record_claim(candidate, result, session_id)
-        return result
+        # An ACCEPTED verdict with no fields is the "no struct exists" case.
+        if not verdict.fields:
+            return verdict
+
+        struct_def = StructDefinition(
+            struct_name=verdict.struct_name,
+            kind=verdict.kind,
+            fields=verdict.fields,
+        )
+        await self._record_claim(candidate, struct_def, session_id)
+        verdict._struct_def = struct_def
+        return verdict
+
+    def to_struct_def(self, verdict: TypeVerdict) -> Optional[StructDefinition]:
+        """Extract the advisory StructDefinition from an accepted verdict."""
+        return getattr(verdict, "_struct_def", None)
+
+    async def _record_rejection(self, candidate, verdict: TypeVerdict) -> None:
+        ledger = self._ledger()
+        if ledger is None:
+            return
+        try:
+            await ledger.record_type_rejection({
+                "candidate_id": candidate.candidate_id,
+                "base_type_hint": candidate.base_type_hint,
+                "rejection_reason": verdict.rejection_reason,
+                "functions_involved": list(candidate.functions_involved or []),
+            })
+        except Exception:
+            log.exception("type recovery: record_type_rejection failed for %s",
+                          candidate.candidate_id)
 
     async def _record_claim(self, candidate, struct_def: StructDefinition,
                             submitted_by: str) -> None:
@@ -117,6 +162,9 @@ class TypeRecoveryAgent:
                 await ledger.set_truth_level(claim_id, "inferred", submitted_by)
             except Exception:
                 log.exception("type recovery: ledger claim failed for %s", func_addr)
+
+
+__all__ = ["TypeRecoveryAgent"]
 
 
 __all__ = ["TypeRecoveryAgent"]
