@@ -57,13 +57,41 @@ GUI daemon control: `python -m reaper.gui.main --status | --stop` (start again w
    the live :8035 vLLM). `configs/default.toml [thinking_levels] recovery_followup = "xhigh"`. This is
    the harness-side lever; opencode's own model is a separate consumer (see #6).
 
+**LATE-SESSION UPDATE (same day, READ):**
+8. **Modular scoring engine (expanded from #4):** `eval/scoring/` replaces the single-file
+   `eval/llm_score.py` (now a compat shim). Rubric REGISTRY (function-name / variable-name /
+   datatype), JudgeEngine enforcing the **independence contract**: each scoring run is ONE fresh,
+   zero-context query (session created per (item,run), destroyed after — never reused; unit-tested).
+   Resumable JSONL cache per (rubric,item,run). ScoreScheduler = the "scheduler" the design asked for:
+   takes the evidence (fn+var names, datatypes) and just scores it via the rubric N independent runs —
+   no BNDB parsing/tool-calling. Multi-dimension CLI:
+   `python -m reaper.eval.scoring --ground-truth ... --reaper-output ... --n-runs 5`.
+9. **Heavy per-mechanism dynamic tests (new):** `eval/heavy/` — 8 HeavyCase registrations (critic
+   loop, renaming, claim labelling/promotion, logic/conclusion [ReviewAgent], type recovery,
+   resynthesis, scheduler, investigation). Each builds a REAL harness (SQLite ledger/todo, fake
+   graph/extractor), seeds a known scenario, drives the ACTUAL production class, asserts invariants,
+   and (live mode) scores the mechanism's output with the rubric engine over N independent runs.
+   Offline = scripted StubLLM, deterministic CI gate (tests/test_heavy_cases.py). Runner:
+   `python -m reaper.eval.heavy.runner [--case X] [--mode offline|live]`.
+10. **Live-found bug, fixed + regressed:** heavy renaming (live) exposed that the model returns bare
+    variable suffixes (`zmm15`) instead of stable node ids (`0x1400:zmm15`); Pass1Dispatcher's ':'
+    check mis-read those as FUNCTION addresses → dropped renames + 6 spurious `:Function` nodes in the
+    live graph. Fix: RenameVariableAgent + ReviewAgent normalize bare rename ids to `<func>:<name>`
+    (both are strictly function-scoped calls). 6 spurious nodes cleaned from live Neo4j. Regression
+    tests added. **Post-fix agents must be restarted to take effect on a resumed/future run.**
+
 **Recommended next actions (order):**
 1. While run continues: watch counters; if Phase 4+ degrade, tune via configs/default.toml (all caps
    justified + live-observable). Do NOT remove llm_max_concurrent guard.
-2. When status == complete: `eval/llm_score.py` (5 runs) + `eval/evaluate.py` (6 metrics) on
-   `data/cjson_001_reaper_output.json`; document scores in §10 telemetry doc + this file.
-3. Update docs/skills/progress.md with live-run evidence; commit the working tree (many uncommitted
-   changes above, including new gui/ + harness telemetry + docs).
+2. **ETA:** live run is in Phase 5 (Pass 1 renames). Graph has ~3,449 Variables + 186 Arguments and
+   renames run strictly one-at-a-time at "minimal" (~13s each live) → Phase 5 is a ~13h sweep; Phases
+   6–7 follow. Do NOT restart; let it run. It is stop/resume-safe if needed.
+3. When status == complete: `python -m reaper.eval.scoring` (5 runs, multi-dimension) +
+   `eval/evaluate.py` (6 metrics) on `data/cjson_001_reaper_output.json`; document scores in §10
+   telemetry doc + this file. Optionally run `python -m reaper.eval.heavy.runner --mode live` to
+   exercise the mechanisms against the real model.
+4. Update docs/skills/progress.md with live-run evidence; commit the working tree (many uncommitted
+   changes above, including new gui/ + harness telemetry + docs + eval/scoring + eval/heavy).
 
 ---
 
