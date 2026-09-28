@@ -296,6 +296,35 @@ Phase 8:                8.1 → 8.2 → 8.3
        excluded from function metrics. 6 tests green + CLI smoke on the built
        binary. -->
 
+- [x] **8.3b (2026-09-27) Modular LLM-judge scoring engine** — `eval/scoring/`
+  <!-- NOTES: rubric REGISTRY (function-name / variable-name / datatype —
+       one-place change to add a dimension), JudgeEngine enforcing the
+       "independent = fresh zero-context query per run" contract (session
+       created immediately before each run, destroyed after; NEVER reused),
+       resumable JSONL cache per (rubric, item, run), shared aggregation math
+       (reporting.py), deterministic alignment (align.py, addr/ordinal for
+       vars, name for structs). ScoreScheduler = the orchestrator the design
+       asked for: it takes the evidence (recovered fn/var names + datatypes)
+       and just scores it with the rubric N independent times — no BNDB
+       parsing, no tool-calling. `llm_score.py` is now a thin compat shim
+       (Scorer/_pairs/RUBRIC API preserved; tests unchanged). CLI:
+       `python -m reaper.eval.scoring --ground-truth ... --reaper-output ...
+       --n-runs 5`. -->
+
+- [x] **8.3c (2026-09-27) Heavy per-mechanism dynamic testing** — `eval/heavy/`
+  <!-- NOTES: per-mechanism HeavyCase framework. Each case builds a REAL
+       harness (SQLite ledger/todo, fake graph/extractor) and drives the ACTUAL
+       production class (CriticEvaluator, RenameVariableAgent, ReviewAgent,
+       TypeRecoveryAgent, ResynthesisAgent, Scheduler, InvestigationLoop),
+       seeding a KNOWN scenario, then (live mode) scoring the mechanism's
+       output with the modular rubric engine over N independent zero-context
+       runs. Offline mode = scripted StubLLM, deterministic CI gate
+       (tests/test_heavy_cases.py — 8 cases, all green, no network). Runner:
+       `python -m reaper.eval.heavy.runner [--case X] [--mode live|offline]`.
+       Covers: critic loop, renaming, claim labelling/promotion, logic/
+       conclusion (review), type recovery, resynthesis, scheduler,
+       investigation. -->
+
 ---
 
 ## Discovered Issues

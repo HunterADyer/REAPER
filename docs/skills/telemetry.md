@@ -247,22 +247,38 @@ must be **smoke-validated live** before being trusted:
 
 ## 10. Scoring (original vs recovered, LLM-judge + rubric, avg of N)
 
-`eval/llm_score.py` implements the agreed scoring approach — no string-only
-exactness:
+**Status 2026-09-27:** scoring is now the MODULAR engine (`eval/scoring/`),
+`eval/llm_score.py` is a thin compat shim. The independence contract is
+enforced and unit-tested:
 
-1. Align ground-truth ORIGINAL names ↔ recovered names **by function address**.
-2. An LLM judge scores each (true, recovered) pair on a 0–10 rubric
-   (10 exact · 8–9 semantically equivalent · 5–7 related/generic · 2–4 wrong
-   but plausible · 0 no rename) with a one-line justification.
-3. **N independent scoring runs are averaged** per pair (default N=5, samples
-   the judge's noise away); report includes per-function table, std, worst
-   matches, and pass rates at thresholds (>=8 equivalent, >=5 related).
-4. Durable JSONL cache (`score_cache.jsonl`) makes interrupted scoring
-   resumable; strictly one request at a time; "minimal" thinking to stay cheap.
+> A "scoring run" is ONE fresh request to the vLLM endpoint with NO context and
+> NO history — each (item, run) gets a brand-new session created right before
+> the call and destroyed immediately after. Nothing leaks between runs.
 
-Run: `~/reaper-venv/bin/python eval/llm_score.py --ground-truth
-eval/cjson/ground_truth.json --reaper-output data/cjson_001_reaper_output.json
---n-runs 5`
+1. **Rubric registry** (`eval/scoring/rubrics.py`) — one entity per scored
+   dimension: function-name, variable-name, datatype (struct layout). Adding a
+   dimension is a one-place change; never edit bands in place (rubrics are
+   versioned; cache keys carry the id INCLUDING version).
+2. **JudgeEngine** (`eval/scoring/judge.py`) — scores items against a rubric
+   over N independent zero-context runs (default N=5), resumable JSONL cache
+   keyed by (rubric, item, run), strictly one request at a time, "minimal"
+   thinking. THESE are the "5 independent scoring runs" the design requires.
+3. **ScoreScheduler** (`eval/scoring/scheduler.py`) — takes the evidence
+   (recovered fn/var names + datatypes from align.py) and just schedules every
+   item through the rubric scorer N independent times, then aggregates
+   (`reporting.py`: mean, std, >=8 equivalent rate, >=5 related rate, failed/
+   no-rename rate).
+4. **Dimensions** — functionwise = function names AND variable names (aligned
+   by address / address+ordinal); datatype = recovered struct layouts scored
+   against the ground-truth layout (offsets + names + types in the prompt).
+
+Run (multi-dimension CLI):
+`python -m reaper.eval.scoring --ground-truth eval/cjson/ground_truth.json
+--reaper-output data/cjson_001_reaper_output.json --n-runs 5`
+
+The same scorer is reused by `eval/heavy/` (per-mechanism heavy tests score
+the mechanism's output, not the full pipeline) — the "make the scoring
+harness/rubric thing modular" requirement.
 
 *End of telemetry/observability design. Extend this doc alongside any new
 instrumentation — it is the checklist agents are expected to follow.*
