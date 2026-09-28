@@ -1,9 +1,72 @@
 # REAPER — Engineering Audit & Session Handoff
 
 **Status:** Implementation COMPLETE — all 28 deliverables across phases 1–8 are implemented and its
-unit suite is green (**204 passed**). Live facts 2026-09-27: Binja 6.0.10601 IS installed (valid
-license) and the full stack now runs against real Binja + Neo4j + vLLM (see handoff below).
-**Rev date:** 2026-09-27.
+unit suite is green. **Rev date:** 2026-09-28 (see latest handoff first). Unit suite now **263 passed**
+(`python3 -m pytest -q`, Binja/Neo4j/vLLM not required for the fake-based tiers). Live stack verified
+against real Binja 6.0.10601 (~/binja, venv `/home/police/binja/.venv`) + Neo4j + vLLM on :8035.
+
+---
+
+## ⚡⚡ SESSION HANDOFF — 2026-09-28 (type-recovery corpus, live batching/GPU tuning — READ FIRST)
+
+**Short version for resuming:** everything below the previous handoff (09-27) is still accurate EXCEPT
+the stale facts it states about Binja (IT IS installed and working now) and test counts (263 not 204/160).
+The work this session: (1) built the deterministic ratify 2-pass, (2) rewrote type recovery around an LLM
+verdict gate + cross-function merge by shared data type + consistent BNDB binding, (3) built a 25-binary
+stripped adversarial corpus with a `--check` regression gate, (4) hardened the detector against real
+Binja output (global-base support added), and (5) measured live batching/GPU behavior and edited the
+vLLM launcher. INTENTIONAL STOPPING POINT: server is still running on the OLD profile; the edited
+launcher waits for an explicit restart (restarting the container kills anything on the GPUs incl. us).
+
+### State right now (verified this session)
+| Item | Verified state |
+|---|---|
+| Unit tests | **263 passed** in ~11s from repo root (fake-based, no Binja/Neo4j/vLLM needed) |
+| Binja | **WORKING** at `/home/police/binja/binaryninja` (6.0.10601); venv `/home/police/binja/.venv` + license auto-discovered. Run with that venv's python, or `PYTHONPATH=/home/police/binja/binaryninja/python` on system python (works: `import binaryninja; pydantic; aiohttp; aiosqlite`). Do NOT override `BN_USER_DIRECTORY`. See `/home/police/binja/AGENT.md`. |
+| Type-recovery corpus | `data/corpora/type_tests/` — **25 stripped adversarial binaries** (sources + `-O0`/`-O2` builds) + `manifest.json`. Regression gate: `scripts/run_type_test_bins.py --check` (real Binja) — currently **50/50 pass**, exit 0. Fake-tier integrity guards in `tests/test_corpus_integrity.py` (6 tests). |
+| Detector hardening | fsbase/canary/`__return_addr` noise suppressed; real access widths from `expr.size` (unions now detected); registers NOT name-banned; SSA-temp normalization; **global bases resolved into one merged candidate** (was invisible — corpus surfaced it). |
+| Type recovery + ratify | Phase 4 = fixed-point struct recovery with **TypeVerdict gate** (accept → name+fields; reject → ledger `type_rejections`); ratify = deterministic xhigh Pass-1 (Phase 6), default phases `2,3,4,5,6`; `for_ratify` shows recovered types as evidence. |
+| vLLM server | LIVE :8035, model `deepseek` (DeepSeek-V4-Flash, `--served-model-name deepseek`), TP2, **2× RTX PRO 6000 Blackwell 97GB (PCIe-connected, NO NVLink)**, `--max-num-seqs 64 --max-num-batched-tokens 8192`, fp8 KV, `--kv-cache-dtype fp8`, prefix caching ON (metric shows `enable_prefix_caching="True"`), 156GB FP8 weights, gpu_memory_utilization 0.96, ~884K-token KV cache. |
+| GPU headroom | 107 GB system RAM free. NOT needed — GPUs are compute-bound at 99% util; weight/KV offload to RAM would only slow decode. Skip unless KV evictions appear. |
+| Batching measured | c=1→95.9, c=4→204.1, c=8→244.5, c=12→283.7 tok/s (fixed-output bench c=4: 230 tok/s, p95 7.8s). GPU hit 97-99% → real on-device batching. |
+
+### The launcher (EDITED, NOT YET APPLIED — restart to activate)
+- **Tuned launcher:** `/home/police/run-deepseek-v4-batch.sh` — has TWO toggles:
+  - `CHUNKED_PREFILL=1` (default ON, new): `--enable-chunked-prefill`. Justified: mid-batch request inserts
+    otherwise prefill in one blocking burst that starves decoding; chunked prefill interleaves them.
+  - `SPEC=0` (default OFF, new): optional MTP speculative decoding. When `SPEC=1`, adds
+    `--spec-model "$SPEC_MODEL"` (default `deepseek_mtp.DeepSeekMultiTokenPredictor`). The model has
+    `num_nextn_predict_layers=1` and the fork ships an MTP spec pipeline (`vllm/v1/spec_decode`,
+    `deepseek_mtp.py`); class import verified but exact enable path NOT empirically confirmed.
+- **Original launcher UNTOUCHED:** `/home/police/run-deepseek-v4.sh` (MAXSEQS=8 MAXBATCH=2048).
+- Restart command (kills GPUs / container / systemd units & reloads ~1-2 min):
+  `bash /home/police/run-deepseek-v4-batch.sh`  (or `SPEC=1 bash ...` to also try spec decode).
+  Do NOT run it from inside an agent shell that must survive the GPU kill? — the script only kills
+  GPU compute PIDs, so it's safe; but the container name changes mean the RUNNING session's MCP servers
+  pointing at :8035 just go briefly unauthorized — queries retried.
+
+### POST-RESTART TEST PLAN (do in order, then continue the broader roadmap below)
+1. **Verify server up:** `curl -s localhost:8035/v1/models` returns `deepseek`; `bash -n` already done.
+   Confirm `--enable-chunked-prefill` took effect: `curl -s localhost:8035/metrics | grep kv_offloading / cache_config` — look for chunked-prefill present; simplest is try an insert mid-batch.
+2. **A/B speculative decoding** (the open question — MUST NOT blindly enable, it can cut aggregate tok/s):
+   - Baseline (SPEC unset): `scripts/probe_batch.py --concurrency 1,4,8 --requests 6 --budget 8192`
+   - `SPEC=1 bash .../run-deepseek-v4-batch.sh`, same probe. Keep SPEC only if tok/s ~equal-or-better AND
+     per-request latency clearly drops. Also re-run the mid-batch-INSERT demo (see `docs/skills/run-audit.md`
+     §6 / scripts history) to confirm inserts never preempt decode with chunked prefill on.
+   - If `--spec-model deepseek_mtp.DeepSeekMultiTokenPredictor` fails at startup (model-not-found), try
+     `SPEC_MODEL=deepseek.DeepSeekMTP` or check the fork's spec-arg parser for the accepted class name.
+3. **Live type-recovery corpus REDUX** (with the new profile): `PYTHONPATH=/home/police/binja/binaryninja/python python3 scripts/run_type_test_bins.py --check` must stay 50/50 (detector only — LLM not needed). Then a targeted verdict smoke (e.g. `... 08` with `--config configs/default.toml`, `python3 -u`) to confirm structured outputs still parse under the new server.
+4. **Resume REAPER pipeline** if desired: `PYTHONPATH=$HOME/binja/python python3 -m reaper.run --binary <bin> --config configs/default.toml --run-id <id>` (phases default 2,3,4,5,6). Old `cjson_001` state persists in Neo4j/SQLite; can resume or start fresh.
+
+### Key measured warnings for the scheduler you will build
+- xhigh reasoning is BUDGET-driven; with tight `max_completion_tokens` requests hit `finish=length`
+  (all tokens = reasoning: 12000/12000 observed) and never emit a final answer — pipeline next-batch prep
+  only pays off once requests actually STOP. Budget xhigh generously or cap reasoning depth.
+- Requests complete INDEPENDENTLY (no batch barrier); vLLM allows inserting into a running batch
+  (`num_requests_waiting=0`, 12-in-flight observed). Client-side `asyncio.gather`+global semaphore is the
+  only thing stopping incremental consumption + batch refill — that's the queue/scheduler to build.
+- Streaming WORKS server-side (`delta.reasoning` then `delta.content` SSE); REAPER client does not use it
+  (non-streaming only). Streaming would enable processing outputs as they arrive; optional future work.
 
 ---
 
