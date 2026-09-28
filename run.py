@@ -217,7 +217,11 @@ async def run_pipeline(binary_path: str, config_path: str, run_id: str = "defaul
                         if not struct_def:
                             continue
                         try:
-                            await rebuilder.apply_struct(struct_def)
+                            await rebuilder.apply_struct(
+                                struct_def,
+                                list(candidate.functions_involved or []),
+                                base_names=candidate.base_names,
+                            )
                             structurally_changed = True
                         except Exception:
                             log.exception("run: struct rebuild failed for %s",

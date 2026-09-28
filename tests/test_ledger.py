@@ -239,3 +239,56 @@ async def test_record_and_get_structs(tmp_path):
         assert len((await ledger.get_structs())["cJSON"]) == 1
     finally:
         await ledger.close()
+
+
+@pytest.mark.asyncio
+async def test_get_recovered_types_returns_kind_and_migrates(tmp_path):
+    """The recovered-type registry (ratify evidence) persists kind + fields
+    and the migration guard adds the `kind` column to pre-existing DBs."""
+    from reaper.harness.submission import StructDefinition, StructField
+    db_path = tmp_path / "ledger.db"
+    ledger = Ledger(str(db_path), FakeNeo4jDriver([]))
+    await ledger.init()
+    try:
+        union = StructDefinition(struct_name="uq", kind="union", fields=[
+            StructField(offset=0, name="as_int", type_str="int32_t", size=4,
+                        confidence="mid_confidence"),
+            StructField(offset=0, name="as_ptr", type_str="void*", size=8,
+                        confidence="mid_confidence"),
+        ])
+        await ledger.record_struct(union)
+        recovered = await ledger.get_recovered_types()
+        assert any(t["name"] == "uq" and t["kind"] == "union" for t in recovered)
+        # fields are listed, sorted by offset
+        uq = next(t for t in recovered if t["name"] == "uq")
+        assert uq["fields"] and uq["fields"][0]["offset"] == 0
+
+        # struct default kind
+        sd = StructDefinition(struct_name="plain", fields=[
+            StructField(offset=0, name="a", type_str="int", size=4,
+                        confidence="inferred"),
+        ])
+        await ledger.record_struct(sd)
+        recovered = await ledger.get_recovered_types()
+        plain = next(t for t in recovered if t["name"] == "plain")
+        assert plain["kind"] == "struct"
+        assert len(plain["fields"]) == 1
+    finally:
+        await ledger.close()
+
+    # Migration guard: a PRE-EXISTING DB (no `kind` column) still initializes.
+    legacy = tmp_path / "legacy.db"
+    import aiosqlite
+    con = await aiosqlite.connect(legacy)
+    await con.executescript(
+        "CREATE TABLE structs (name TEXT PRIMARY KEY, base_type TEXT, created_at TEXT);"
+    )
+    await con.commit()
+    await con.close()
+    ledger2 = Ledger(str(legacy), FakeNeo4jDriver([]))
+    await ledger2.init()
+    try:
+        recovered = await ledger2.get_recovered_types()
+        assert recovered == []
+    finally:
+        await ledger2.close()

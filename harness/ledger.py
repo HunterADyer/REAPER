@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS evidence_links (
 
 CREATE TABLE IF NOT EXISTS structs (
     name TEXT PRIMARY KEY,
+    kind TEXT DEFAULT 'struct',
     base_type TEXT,
     created_at TEXT
 );
@@ -126,6 +127,17 @@ class Ledger:
         except Exception:  # noqa: BLE001 - introspection must never block init
             pass
         await self._db.executescript(_SCHEMA)
+        # Migration guard: older databases created before the `kind` column
+        # existed get it added in place (ALTER is cheap and idempotent-only).
+        try:
+            cursor = await self._db.execute(
+                "SELECT kind FROM structs LIMIT 1"
+            )
+            await cursor.fetchone()
+        except Exception:
+            await self._db.execute(
+                "ALTER TABLE structs ADD COLUMN kind TEXT DEFAULT 'struct'"
+            )
         await self._db.commit()
         self._write_lock = asyncio.Lock()
 
@@ -434,9 +446,14 @@ class Ledger:
         async with self._write_lock:
             await db.execute("DELETE FROM struct_fields WHERE struct_name = ?", (name,))
             await db.execute(
-                "INSERT OR REPLACE INTO structs (name, base_type, created_at) "
-                "VALUES (?, ?, ?)",
-                (name, getattr(struct_def, "base_type", None), _now()),
+                "INSERT OR REPLACE INTO structs (name, kind, base_type, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    name,
+                    getattr(struct_def, "kind", "struct"),
+                    getattr(struct_def, "base_type", None),
+                    _now(),
+                ),
             )
             for field in fields:
                 await db.execute(
@@ -471,6 +488,31 @@ class Ledger:
                 "confidence": r[5],
             })
         return out
+
+    async def get_recovered_types(self) -> list[dict]:
+        """Return [{name, kind, base_type, fields: [{offset, name, type_str}]}]
+        for every recovered struct/union, for naming-pass evidence and
+        reports. ``fields`` are sorted by offset; a type with no fields is
+        still listed (empty layout is a valid inference signal)."""
+        db = self._require_ready()
+        cursor = await db.execute(
+            "SELECT name, kind, base_type FROM structs ORDER BY name"
+        )
+        types = [
+            {"name": r[0], "kind": r[1] or "struct", "base_type": r[2]}
+            for r in await cursor.fetchall()
+        ]
+        for t in types:
+            fc = await db.execute(
+                "SELECT offset, name, type_str FROM struct_fields "
+                "WHERE struct_name = ? ORDER BY offset",
+                (t["name"],),
+            )
+            t["fields"] = [
+                {"offset": r[0], "name": r[1], "type_str": r[2]}
+                for r in await fc.fetchall()
+            ]
+        return types
 
     # -- name decisions (deterministic Pass-1 ratify) --------------------------
 

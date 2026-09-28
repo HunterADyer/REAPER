@@ -51,11 +51,39 @@ class GraphRebuilder:
 
     @staticmethod
     def _c_struct(struct_def: StructDefinition) -> str:
-        lines = [f"struct {struct_def.struct_name} {{"]
+        kind = getattr(struct_def, "kind", "struct")
+        keyword = "union" if kind == "union" else "struct"
+        lines = [f"{keyword} {struct_def.struct_name} {{"]
         for fld in sorted(struct_def.fields, key=lambda f: f.offset):
             lines.append(f"    {fld.type_str} {fld.name};")
         lines.append("};")
         return "\n".join(lines)
+
+    async def _bind_base_types(
+        self,
+        struct_def: StructDefinition,
+        base_names: dict[str, list[str]],
+    ) -> None:
+        """Retag every involved base variable with the recovered pointer type.
+
+        This is the coherence contract: a recovered struct/union must be
+        APPLIED CONSISTENTLY THROUGH THE BNDB — every variable that was shown
+        (via call-context sharing or Binja's own typing) to hold the data is
+        rebound to ``struct <name> *``, so the BNDB type graph references the
+        type instead of leaving it dangling and 3 partial structs in its place.
+        """
+        if self.bndb_writer is None:
+            return
+        pointer_type = f"{'union' if struct_def.kind == 'union' else 'struct'} {struct_def.struct_name} *"
+        for func_addr, names in (base_names or {}).items():
+            for base_name in names:
+                node_id = f"{func_addr}:{base_name}"
+                try:
+                    self.bndb_writer.set_variable_type(
+                        func_addr, node_id, pointer_type)
+                except Exception:
+                    # not every base is guaranteed present in Binja; never fatal
+                    log.debug("GraphRebuilder: skip type bind for %s", node_id)
 
     def _all_function_addresses(self) -> list[str]:
         """Fallback when the caller cannot name affected functions."""
@@ -69,12 +97,17 @@ class GraphRebuilder:
         self,
         struct_def: StructDefinition,
         function_addresses: list[str] | None = None,
+        base_names: dict[str, list[str]] | None = None,
     ) -> list[str]:
         """Apply a struct definition and rebuild the graph (returns affected).
 
         ``function_addresses`` may be provided by the type-recovery loop (the
         candidate's ``functions_involved``); when omitted, every function
         known to the extractor is treated as potentially affected.
+        ``base_names`` maps function_address -> variable names bound to this
+        type (from the candidate); those bases are retagged with the recovered
+        pointer type in the BNDB so the type is applied consistently through
+        the bndb, not merely defined.
         """
         struct_str = self._c_struct(struct_def)
         if self.bndb_writer is not None:
@@ -82,6 +115,7 @@ class GraphRebuilder:
                 self.bndb_writer.set_struct_type(struct_def.struct_name, struct_str)
             except Exception:
                 log.exception("GraphRebuilder: bndb set_struct_type failed")
+            await self._bind_base_types(struct_def, base_names or {})
 
         affected = [a for a in (function_addresses or []) if a] or \
             self._all_function_addresses()

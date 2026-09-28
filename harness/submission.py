@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from typing import Literal
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 TRUTH_LEVELS = Literal[
     "speculation", "inferred", "low_confidence", "mid_confidence", "high_confidence"
@@ -142,6 +142,13 @@ class StructField(BaseModel):
 
 class StructDefinition(BaseModel):
     struct_name: str
+    kind: str = Field(
+        default="struct",
+        description="'struct' or 'union'. A union is emitted when two "
+        "observed accesses ALIAS THE SAME BYTE RANGE with different "
+        "semantics (the overlap_hint fired); never emit 'union' for plain "
+        "disjoint offsets.",
+    )
     fields: list[StructField]
 
 

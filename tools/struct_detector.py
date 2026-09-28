@@ -28,6 +28,11 @@ class FieldAccess(BaseModel):
     access_type: str = Field(description="'read' or 'write'")
     function_address: str
     instruction_address: str
+    base_var: str = Field(
+        default="",
+        description="name of the base variable whose field is accessed; used "
+        "to bind the recovered struct pointer type back onto the variable",
+    )
 
 
 class StructCandidate(BaseModel):
@@ -37,6 +42,17 @@ class StructCandidate(BaseModel):
     base_type_hint: str
     accesses: list[FieldAccess]
     functions_involved: list[str]
+    base_names: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="function_address -> base variable names bound to this "
+        "candidate; the re-apply step retags these bases with the recovered "
+        "struct pointer type",
+    )
+    overlap_hint: bool = Field(
+        default=False,
+        description="two accesses alias the same byte range at the same "
+        "offset with different sizes — may indicate a union",
+    )
 
 
 def _hex(address) -> str:
@@ -121,6 +137,7 @@ class StructAccessDetector:
             access_type=access.get("access_type", "read"),
             function_address=func_addr,
             instruction_address=instruction_addr,
+            base_var=base_var.name,
         )))
 
     def _deref_access(self, expr, func_addr, write) -> None:
@@ -223,8 +240,127 @@ class StructAccessDetector:
                 return str(getattr(v, "type", "") or "")
         return ""
 
+    # ---------------------------------------------------------------- #
+    # Call-context sharing (design: merge by SHARED DATA TYPE, not 3
+    # partial structs). When a field-accessed base is passed into a callee
+    # whose matching parameter is also field-accessed — OR a callee returns
+    # a field-accessed base that the caller stores into a field-accessed
+    # variable — a reverse engineer concludes the SAME data type and unions
+    # the partial field observations into ONE complete struct. Driven by a
+    # union-find over (func_addr, base_name) keys.
+    # ---------------------------------------------------------------- #
+
+    @staticmethod
+    def _call_target_address(instr) -> str | None:
+        c = getattr(instr, "const", None)
+        if c is not None:
+            return _hex(c) if isinstance(c, int) else str(c)
+        dest = getattr(instr, "dest", None)
+        if dest is not None:
+            c = getattr(dest, "constant", None)
+            if c is not None:
+                return _hex(c)
+        return None
+
+    def _callee_return_bases(self, callee) -> list[str]:
+        """Names of field-accessed bases returned by ``callee`` (from HLIL_RET
+        src root variables)."""
+        out = []
+        for ins in getattr(getattr(callee, "hlil", None), "instructions", None) or []:
+            if getattr(ins, "operation", None) not in (
+                Op.HLIL_RET, Op.HLIL_TAILCALL,
+            ):
+                continue
+            for src in _safe_list(getattr(ins, "src", None)) or []:
+                rv = _root_var(src)
+                if rv is not None and getattr(rv, "name", None):
+                    out.append(rv.name)
+        return out
+
+    def _iter_calls(self, expr):
+        """Yield every CALL/TAILCALL expression, recursing through the tree.
+
+        Mirrors :meth:`_walk` structural descent (address not needed here) so
+        call-context sharing is discovered even when a call sits inside an
+        assignment, an if-condition, or any other container instruction.
+        """
+        if expr is None or not hasattr(expr, "operation"):
+            return
+        op = expr.operation
+        if op in (Op.HLIL_CALL, Op.HLIL_TAILCALL):
+            yield expr
+            return
+        if op in _ARRAY_OPS:
+            yield from self._iter_calls(getattr(expr, "src", None))
+            yield from self._iter_calls(getattr(expr, "index", None))
+        elif op in _BINARY_OPS:
+            yield from self._iter_calls(getattr(expr, "left", None))
+            yield from self._iter_calls(getattr(expr, "right", None))
+        elif op == Op.HLIL_ASSIGN:
+            yield from self._iter_calls(getattr(expr, "dest", None))
+            yield from self._iter_calls(getattr(expr, "src", None))
+        elif op in (Op.HLIL_VAR_INIT, Op.HLIL_VAR_DECLARE):
+            yield from self._iter_calls(getattr(expr, "src", None))
+        elif op == Op.HLIL_RET:
+            for val in _safe_list(getattr(expr, "src", None)):
+                yield from self._iter_calls(val)
+        elif op in _UNARY_SRC_OPS:
+            yield from self._iter_calls(getattr(expr, "src", None))
+        elif op in (Op.HLIL_IF, Op.HLIL_WHILE, Op.HLIL_DO_WHILE):
+            yield from self._iter_calls(getattr(expr, "condition", None))
+        elif op == Op.HLIL_FOR:
+            yield from self._iter_calls(getattr(expr, "init", None))
+            yield from self._iter_calls(getattr(expr, "condition", None))
+            yield from self._iter_calls(getattr(expr, "update", None))
+        elif op == Op.HLIL_SWITCH:
+            yield from self._iter_calls(getattr(expr, "condition", None))
+        else:
+            for child in _safe_list(getattr(expr, "operands", None)):
+                yield from self._iter_calls(child)
+
+    def _sharing_edges(self) -> list[tuple[tuple, tuple]]:
+        """Return union edges (key_A, key_B) from call-context evidence."""
+        edges: list[tuple[tuple, tuple]] = []
+        for f in self.extractor.get_functions():
+            func_addr = _hex(getattr(f, "start", 0))
+            for ins in getattr(getattr(f, "hlil", None), "instructions", None) or []:
+                for call_ins in self._iter_calls(ins):
+                    op = getattr(call_ins, "operation", None)
+                    if op not in (Op.HLIL_CALL, Op.HLIL_TAILCALL):
+                        continue
+                    target = self._call_target_address(call_ins)
+                    callee = self._functions_by_addr.get(target)
+                    if callee is None:
+                        continue
+                    callee_params = getattr(callee, "parameter_vars", None) or []
+                    for i, pexpr in enumerate(_safe_list(getattr(call_ins, "params", None)) or []):
+                        if i >= len(callee_params):
+                            break
+                        cb = _root_var(pexpr)
+                        pb = getattr(callee_params[i], "name", None)
+                        if cb is None or not getattr(cb, "name", None) or not pb:
+                            continue
+                        edges.append(((func_addr, cb.name), (target, pb)))
+                    # return-flow: caller stores callee's returned base into a var
+                    dest = getattr(call_ins, "dest", None)
+                    if dest is not None:
+                        db = _root_var(dest)
+                        if db is not None and getattr(db, "name", None):
+                            for rb in self._callee_return_bases(callee):
+                                edges.append(((func_addr, db.name), (target, rb)))
+        return edges
+
     def find_struct_accesses(self) -> list[StructCandidate]:
-        """Walk all functions' HLIL and group struct field accesses (4.1)."""
+        """Walk all functions' HLIL and group struct field accesses (4.1).
+
+        Grouping (design § 4.1 + type-sharing merge): WITHIN a function by
+        base variable; ACROSS functions when (a) Binja assigns the same
+        meaningful type, or (b) call-context evidence shows the same value
+        flows between them (a field-accessed base is passed as an argument
+        to a callee whose parameter is also field-accessed, or is returned
+        and stored). Merged candidates carry the UNION of all observed
+        offsets — one complete struct, never N partial structs.
+        """
         self._found = []
         self._functions_by_addr = {}
         for f in self.extractor.get_functions():
@@ -239,38 +375,84 @@ class StructAccessDetector:
         for func_addr, base_name, acc in self._found:
             within.setdefault((func_addr, base_name), []).append(acc)
 
-        # Cross-function key: only a MEANINGFUL Binja type may bridge two
-        # functions; unknown types force independent candidates (no false
-        # positive grouping — design § 4.1).
-        cross_key: dict[tuple[str, str], str] = {}
-        fallback = 0
-        for key in within:
+        # -- union-find over (func_addr, base_name) keys ------------------
+        keys = list(within)
+        parent = {k: k for k in keys}
+        rank = {k: 0 for k in keys}
+
+        def find(k):
+            while parent[k] != k:
+                parent[k] = parent[parent[k]]
+                k = parent[k]
+            return k
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra == rb:
+                return
+            if rank[ra] < rank[rb]:
+                ra, rb = rb, ra
+            parent[rb] = ra
+            if rank[ra] == rank[rb]:
+                rank[ra] += 1
+
+        # Edge set 1: identical meaningful Binja type (conservative, as before).
+        typed: dict[str, list[tuple]] = {}
+        for key in keys:
             hint = self._base_type(*key).strip()
             if hint and hint != "$unknown" and hint != "void" \
                     and "unknown" not in hint.lower():
-                cross_key[key] = hint
-            else:
-                fallback += 1
-                cross_key[key] = f"__untracked_{fallback}"
+                typed.setdefault(hint, []).append(key)
+        for _hint, group in typed.items():
+            root = group[0]
+            for k in group[1:]:
+                union(root, k)
 
-        clusters: dict[str, list[FieldAccess]] = {}
-        func_sets: dict[str, set] = {}
-        hinted: dict[str, str] = {}
-        for key, group in within.items():
-            ck = cross_key[key]
-            clusters.setdefault(ck, []).extend(group)
-            func_sets.setdefault(ck, set()).add(key[0])
-            if not ck.startswith("__untracked_"):
-                hinted[ck] = self._base_type(*key)
+        # Edge set 2: call-context sharing (SAME DATA TYPE across functions).
+        for a, b in self._sharing_edges():
+            if a in within and b in within:
+                union(a, b)
+
+        # -- assemble one candidate per connected component --------------
+        comps: dict[tuple, list[tuple]] = {}
+        for key in keys:
+            comps.setdefault(find(key), []).append(key)
 
         candidates: list[StructCandidate] = []
-        for i, ck in enumerate(sorted(clusters, key=str)):
+        for i, root in enumerate(sorted(comps, key=str)):
+            member_keys = comps[root]
+            cluster = [acc for k in member_keys for acc in within[k]]
+            func_sets = {k[0] for k in member_keys}
+            base_names: dict[str, list[str]] = {}
+            for func_addr, base_name in member_keys:
+                base_names.setdefault(func_addr, []).append(base_name)
+            for fa, names in base_names.items():
+                base_names[fa] = sorted(set(names))
+
+            hint = ""
+            for fa, bn in member_keys:
+                h = self._base_type(fa, bn).strip()
+                if h and h != "$unknown" and h != "void" \
+                        and "unknown" not in h.lower():
+                    hint = h
+                    break
+
+            # overlap hint: same offset aliased with different sizes -> union
+            overlap = False
+            sizes_by_offset: dict[int, set[int]] = {}
+            for acc in cluster:
+                sizes_by_offset.setdefault(acc.offset, set()).add(acc.size)
+            if any(len(sz) > 1 for sz in sizes_by_offset.values()):
+                overlap = True
+
             candidates.append(StructCandidate(
                 candidate_id=f"struct_cand_{i}",
-                base_type_hint=hinted.get(ck, ""),
-                accesses=sorted(clusters[ck], key=lambda a: (
+                base_type_hint=hint,
+                accesses=sorted(cluster, key=lambda a: (
                     int(a.function_address, 16), a.instruction_address, a.offset)),
-                functions_involved=sorted(func_sets[ck], key=lambda a: int(a, 16)),
+                functions_involved=sorted(func_sets, key=lambda a: int(a, 16)),
+                base_names=base_names,
+                overlap_hint=overlap,
             ))
         return candidates
 

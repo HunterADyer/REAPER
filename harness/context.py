@@ -151,6 +151,10 @@ class ContextAssembler:
             parts.append("Current graph names (approve or rename these):\n" +
                          "\n".join(lines))
 
+        rec = await self._recovered_types_for_function(func_address, entities)
+        if rec:
+            parts.append("Recovered types bound to this function:\n" + rec)
+
         refs = self._safe_extractor_list(self.extractor.get_string_refs, func_address)
         if refs:
             parts.append(
@@ -206,6 +210,51 @@ class ContextAssembler:
                     "type": r.get("type"),
                 })
         return [e for e in out if e.get("node_id")]
+
+    async def _recovered_types_for_function(
+        self,
+        func_address: str,
+        entities: list[dict],
+    ) -> str:
+        """Render recovered struct/union definitions this function uses.
+
+        Cross-references the graph entity ``type`` strings (a base retagged to
+        ``struct <name> *`` by type recovery) against the ledger's recovered
+        type registry. Only types actually referenced by THIS function are
+        listed — evidence, not noise. Returns "" when nothing is referenced.
+        """
+        ledger = getattr(self, "ledger", None)
+        if ledger is None:
+            return ""
+        try:
+            recovered = await ledger.get_recovered_types()
+        except Exception:
+            return ""
+        if not recovered:
+            return ""
+
+        referenced: set[str] = set()
+        for e in entities:
+            t = (e.get("type") or "").strip()
+            for r in recovered:
+                if f"{r['kind']} {r['name']}" in t or t.endswith(f"{r['name']} *"):
+                    referenced.add(r["name"])
+        if not referenced:
+            return ""
+
+        lines = []
+        for r in recovered:
+            if r["name"] not in referenced:
+                continue
+            kw = r.get("kind") or "struct"
+            lines.append(f"  {kw} {r['name']} {{")
+            for fld in (r.get("fields") or []):
+                lines.append(
+                    f"    +0x{fld.get('offset', 0):x} {fld.get('type_str', '?')} "
+                    f"{fld.get('name', '?')}"
+                )
+            lines.append("  }")
+        return "\n".join(lines) if lines else ""
 
     async def for_variable(
         self,
@@ -263,7 +312,9 @@ class ContextAssembler:
         """Assemble context for type recovery from a StructCandidate.
 
         Groups the candidate's FieldAccess sites by function and retrieves the
-        single HLIL instruction at each access site.
+        single HLIL instruction at each access site. When call-context sharing
+        merged bases ACROSS functions, that is stated explicitly so the agent
+        treats the partial views as ONE type and emits a complete union.
         """
         groups: dict[str, list] = {}
         for access in candidate.accesses:
@@ -273,6 +324,20 @@ class ContextAssembler:
             f"Struct candidate: {candidate.candidate_id} "
             f"(base type hint: {candidate.base_type_hint})"
         ]
+        base_names = getattr(candidate, "base_names", None) or {}
+        if len(groups) > 1:
+            involved = ", ".join(
+                f"{fa} [{', '.join(names)}]" for fa, names in sorted(
+                    base_names.items(), key=lambda kv: int(kv[0], 16)))
+            parts.append(f"SHARED DATA TYPE across functions: "
+                         f"the same pointer value flows between {involved} — "
+                         f"treat these partial field observations as ONE struct")
+        elif base_names:
+            parts.append(f"Bases bound in this function: "
+                         f"{', '.join(sorted({n for names in base_names.values() for n in names}))}")
+        if getattr(candidate, "overlap_hint", False):
+            parts.append("OVERLAP HINT: two accesses alias the same byte range "
+                         "with different sizes — consider a UNION layout")
         for func_addr in sorted(groups, key=lambda x: int(str(x), 16)):
             parts.append(f"Function {func_addr}:")
             for access in sorted(groups[func_addr], key=lambda a: a.offset):

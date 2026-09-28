@@ -340,3 +340,66 @@ first so concurrency actually has a queue to chew through.
 - Did not yet build `scripts/probe_batch.py`.
 - Did not modify anything about the critic's acceptance policy — flagged, not
   changed (evidence needed first).
+
+---
+
+## 10. Type recovery — "merge by shared data type" (2026-09-28)
+
+Resolves the P0/P2 gap that type recovery only created 3 PARTIAL structs when
+3 functions received the same struct as an argument. The contract, per the
+design conversation, is what a careful reverse engineer does: conclude the
+functions share ONE data type and assign that same type to all the variables
+(rather than fabricate N partial structs whose member lists are individually
+incomplete but collectively complete).
+
+### What changed (Phase 4, `tools/struct_detector.py` + `graph_rebuild.py`)
+
+1. **Call-context merging** — `StructAccessDetector` now union-finds
+   `(func, base)` keys over two evidence edges:
+   - identical meaningful Binja type (conservative, as before), and
+   - **call-flow sharing**: a field-accessed base passed as an argument into a
+     callee whose matching parameter is also field-accessed, or a callee's
+     returned field-accessed base stored by the caller. Both sides must be
+     recorded field bases (no false-positive merges on opaque values).
+   Merged candidates carry the UNION of all observed offsets across every
+   function — one complete struct, tied to `base_names` (func -> bound bases).
+
+2. **Union support** — `StructDefinition.kind` ∈ {struct, union}; overlapping
+   / aliased byte-range accesses (same offset, differing sizes) fire the
+   `overlap_hint`; the prompt + context instruct the agent to emit `union`.
+   `GraphRebuilder._c_struct` emits `union X { ... }`.
+
+3. **Apply consistently through the bndb** — new `BNDBWriter.set_variable_type`
+   rebinds every involved base variable (vars AND parameters) to
+   `struct <name> *` / `union <name> *`. `GraphRebuilder.apply_struct` calls it
+   for every `base_names` entry, so the recovered type is REFERENCED by real
+   code in the BNDB, never left as a dangling user type. `_find_var` now also
+   searches `parameter_vars` (a shared base is legitimately an argument).
+
+4. **Naming-pass interop** — `ledger.get_recovered_types()` + a `kind` column
+   (with an ALTER migration guard for existing DBs) expose recovered layouts;
+   `for_ratify` renders a "Recovered types bound to this function" section
+   (struct/union name + fields with offsets) as evidence for ratify, so names
+   are grounded in the recovered types. Type recovery stays BEFORE Pass 0/ratify.
+
+### Files
+- `tools/struct_detector.py` — union-find merge, `_iter_calls`, `base_names`,
+  `overlap_hint`, return-flow edges.
+- `tools/graph_rebuild.py` — `_bind_base_types`, union `_c_struct`.
+- `tools/bndb_writer.py` — `set_variable_type` (+ param lookup).
+- `harness/submission.py` — `StructDefinition.kind`.
+- `agents/prompts/type_recovery.txt` — SHARED DATA TYPE + union instructions.
+- `harness/context.py` — `for_struct_candidate` sharing/overlap notes,
+  `for_ratify` recovered-types section.
+- `harness/ledger.py` — recovered-type registry + migration guard.
+- `tests/test_type_merge.py` — 7 tests (merge, return-flow, union hint,
+  type binding, union emission).
+
+### Tunables / open items
+- `base_type_hint` on a merged candidate is the FIRST meaningful hint found
+  among members; if a real binary shows conflicting hints we may need a
+  confidence-weighted pick.
+- The merged candidate is the sole authority for the recovered field set and
+  the agent is instructed NEVER to split a SHARED candidate; if a live run
+  over-merges, the retagging contract makes it easy to loosen (require offset
+  overlap *plus* call flow) — confirmed by the user to ship this way first.

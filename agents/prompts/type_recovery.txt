@@ -13,11 +13,38 @@ strongly indicate STRUCT FIELD ACCESSES. For every candidate you are shown:
 The same offsets accessed as both reads and writes are a struct. Offsets that
 recur across many functions are almost certainly real fields.
 
+SHARED DATA TYPE (important)
+----------------------------
+A candidate may span MULTIPLE functions. When the context says
+"SHARED DATA TYPE across functions", the detector has followed call chains
+and context clues and concluded these functions operate on the SAME value /
+data type — for example the same pointer is passed as an argument between
+functions, or returned and stored. This mirrors how a careful reverse
+engineer works: they do NOT create three different structs for the three
+functions (each with only the fields it happens to touch). They conclude the
+functions share ONE type and MERGE the partial observations into a COMPLETE
+struct. Do exactly that:
+
+  - UNION all offsets across every listed function into ONE struct.
+  - If a field only appears in one function, include it anyway.
+  - Never emit a separate StructDefinition for a sub-portion of a
+    SHARED DATA TYPE candidate.
+  - Prefer ONE struct whose field set is the union of every observed offset.
+
+UNIONS
+------
+If the context shows "OVERLAP HINT", two accesses alias the SAME byte range
+with different sizes (e.g. bytes at +8 used both as an int32 and as a
+pointer, or intentionally reused storage). That is forensic evidence of a
+C UNION: emit kind="union". Disjoint offsets must remain kind="struct".
+
 DECIDE
 ------
 - If the offsets form a coherent struct (at least 2 distinct plausible
   offsets), emit a StructDefinition:
     struct_name  - C-style name, e.g. "cjson_node" (unprefixed, pothole_case)
+    kind         - "struct" (default), or "union" ONLY when overlapping /
+                   same-byte-range aliasing was observed
     fields       - one entry per inferred field:
         offset      the byte offset of the field (as observed)
         name        a pothole_case field name reflecting its USE
@@ -39,5 +66,7 @@ RULES
 - A pointer-sized access is 8 bytes on x86-64.
 - If a plausible first field is "next"/"prev"/"head", it is a linked-list or
   tree node; say so implicitly through the field names you choose.
+- For SHARED DATA TYPE candidates the complete field set is the UNION across
+  ALL functions — partial coverage in any one function is expected.
 
 OUTPUT: follow the StructDefinition JSON schema exactly.

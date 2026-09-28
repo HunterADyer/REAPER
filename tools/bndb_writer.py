@@ -134,6 +134,51 @@ class BNDBWriter:
         self.bv.user_types[struct_name] = struct_str
         return False
 
+    def set_variable_type(
+        self,
+        func_address: int,
+        node_id: str,
+        type_str: str,
+    ) -> None:
+        """Bind a user type to a variable identified by its STABLE node_id.
+
+        Lookup chain mirrors :meth:`rename_variable` (the name Binja currently
+        holds, then the node_id-suffix original name). Sets ``var.type`` so the
+        BNDB actually REFERENCES the recovered struct/union pointer type —
+        this is the "apply consistently through the bndb" step: a recovered
+        ``struct config*`` is never a dangling user type, it is bound to every
+        base variable that was shown to hold that data.
+        """
+        func_address = self._to_int(func_address)
+        func = self.bv.get_function_at(func_address)
+        if func is None:
+            raise KeyError(f"no function at 0x{func_address:x} in BinaryView")
+
+        current_name = self._resolve_current_var_name(node_id)
+        var = self._find_var(func, current_name)
+        if var is None:
+            raise KeyError(
+                f"variable {current_name!r} (node {node_id!r}) not found in "
+                f"function 0x{func_address:x}"
+            )
+
+        try:
+            parsed = self.bv.parse_type_string(type_str)
+            new_type = parsed[0] if isinstance(parsed, tuple) else parsed
+            if hasattr(var, "set_user_type"):
+                var.set_user_type(new_type)
+            elif hasattr(func, "set_user_var_type"):
+                func.set_user_var_type(var, new_type)
+            else:
+                var.type = new_type
+        except AttributeError:
+            # Binja absent — store the string on the duck-typed object.
+            log.debug("set_variable_type(%s): Binja absent — string fallback", node_id)
+            var.type_str = type_str
+            if hasattr(var, "type") and hasattr(var.type, "type_str"):
+                var.type.type_str = type_str
+        return var
+
     def save(self) -> str:
         """Persist the BinaryView to the BNDB file (bv.save). Requires Binja."""
         require_binja(
@@ -162,6 +207,9 @@ class BNDBWriter:
 
     def _find_var(self, func, name: str):
         for var in getattr(func, "vars", None) or []:
+            if getattr(var, "name", None) == name:
+                return var
+        for var in getattr(func, "parameter_vars", None) or []:
             if getattr(var, "name", None) == name:
                 return var
         return None
