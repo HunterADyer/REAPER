@@ -406,17 +406,53 @@ STRIPPED test binaries are committed (sources in the same dir), each built at
 | `04_union` | genuine union (same bytes as uint64 AND halves) + struct | union accepted separately, struct accepted |
 | `05_false_merge` | TWO unrelated structs passed to one generic `void*` helper (same offsets) — the over-merge trap | reject (or at most name per-type; must NOT mix widget/gadget semantics) |
 
+Three ADVERSAIRAL binaries were added (2026-09-28) specifically to break the
+naive detector, then hardened against:
+
+| test | what it breaks | detector fix it drove |
+|---|---|---|
+| `06_canary_noise` | TLS stack-canary (`fsbase+0x28`) + saved-return-addr + register-temp noise; must still find the ONE real config struct | ignore foundation-only bases; real access-width capture; drop pure-indirection bases |
+| `07_false_merge_regs` | two unrelated structs reaching a common `void*` helper via registers — over-merge trap at -O2 | registers NOT name-filtered (they carry real fields at -O2); verdict is the gate |
+| `08_union_widths` | union where the SAME offset is read as int32 AND uint64 | per-access size from Binja `expr.size` → union overlap_hint now fires |
+
 Run against Binja headless (needs `PYTHONPATH` per docs/binja-module.md §1):
 
     python3 scripts/run_type_test_bins.py            # detector + LLM verdict
     python3 scripts/run_type_test_bins.py --no-llm   # detector only, no LLM
 
 The harness degrades gracefully (prints a skip hint) when Binja is absent;
-fake-Binja tests cover the verdict logic in CI.
+fake-Binja tests cover the detector/verdict logic in CI. With the configured
+`[vllm]` section reachable the harness drives the REAL TypeRecoveryAgent
+verdict over real disassembly.
+
+#### Hand-tuning findings (run against live Binja + DeepSeek, 2026-09-28)
+
+Verified detector behavior on real stripped binaries (all -O0 + -O2):
+- Foundation noise eliminated: canary/`__return_addr` bases no longer appear
+  as candidates; a stack-protected binary (06) now yields a single coherent
+  candidate for the real struct + minimal churn.
+- Real access widths recovered: union tests (04/08) correctly report
+  overlapping-size aliasing (union hint) instead of 8B-everywhere.
+- Register temporaries at -O2 are NOT banned by name — they legitimately carry
+  struct field accesses (`rcx_1[1]` == offset 8); -O0 noise from the same
+  registers is suppressed by the evidence-based indirection drop, not by name
+  matching.
+- The verdict (live DeepSeek) accepts genuine unions as `kind=union` and
+  recovers the intended real struct with the complete field set (e.g. 06: 5
+  fields at offsets 0/4/8/16/31). The false-merge discriminator (07) is
+  currently ACCEPTED as a single union/struct — the exact over-merge case to
+  hand-tune: the caution bias in the prompt deliberately errs toward accept;
+  tightening it (require offset overlap *plus* call flow) is the tuning knob.
+- Residual 0-field / single-field candidates ARE still emitted into the LLM
+  (verdict correctly returns "no struct" for them — harmless but adds requests).
+  Dropping them in the detector (e.g. require >=2 distinct offsets regardless
+  of sharing) would cut LLM cost; keep as a knob, not default, since the
+  dispatcher legitimately sees only offset-0 in some functions.
 
 ### Files
 - `tools/struct_detector.py` — union-find merge, `_iter_calls`, `base_names`,
-  `overlap_hint`, return-flow edges.
+  `overlap_hint`, return-flow edges; foundation-base ignore + real-size
+  capture + pure-indirection/sharing-aware drop + SSA-temp normalization.
 - `tools/graph_rebuild.py` — `_bind_base_types`, union `_c_struct`.
 - `tools/bndb_writer.py` — `set_variable_type` (+ param lookup).
 - `harness/submission.py` — `StructDefinition.kind`, `TypeVerdict`.
@@ -426,9 +462,10 @@ fake-Binja tests cover the verdict logic in CI.
   `for_ratify` recovered-types section.
 - `harness/ledger.py` — recovered-type registry, `type_rejections` + migration.
 - `data/corpora/type_tests/*` + `scripts/build_type_test_bins.sh` +
-  `scripts/run_type_test_bins.py` — hand-tuning corpus.
+  `scripts/run_type_test_bins.py` — hand-tuning corpus (8 binaries, -O0/-O2).
 - `tests/test_type_merge.py`, `tests/test_type_recovery.py` (verdict),
-  `tests/test_ledger.py` — 8 verdict/merge/ledger tests.
+  `tests/test_detector_hardening.py` (6 adversarial-detector tests),
+  `tests/test_ledger.py` — 14 verdict/merge/detector/ledger round-trips.
 
 ### Tunables / open items
 - `base_type_hint` on a merged candidate is the FIRST meaningful hint found

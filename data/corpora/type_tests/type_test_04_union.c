@@ -11,6 +11,9 @@
  * and kind="struct" for packet.
  */
 #include <stdint.h>
+
+#define NOINLINE __attribute__((noinline))
+
 #include <stddef.h>
 
 union u_dispatch {
@@ -28,18 +31,22 @@ struct packet {
 
 static volatile uint64_t g_sink;
 
+NOINLINE
 static uint16_t packet_lo(struct packet *p) {
     return p->d.lo;                 /* offset 0, 2 bytes — aliases raw low */
 }
 
+NOINLINE
 static uint32_t packet_mid(struct packet *p) {
     return p->d.mid;                /* offset 4, 4 bytes — aliases raw mid */
 }
 
+NOINLINE
 static uint64_t packet_raw(struct packet *p) {
     return p->d.raw;                /* offset 0, 8 bytes — FULL overlap */
 }
 
+NOINLINE
 static void fill_packet(struct packet *p, uint64_t raw) {
     p->d.raw = raw;
     p->len = 4;                     /* offset 8 */

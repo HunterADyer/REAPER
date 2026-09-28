@@ -34,6 +34,7 @@ from reaper.harness.submission import (
     TypeVerdict,
     get_schema,
     parse_response,
+    send_structured,
 )
 
 log = logging.getLogger(__name__)
@@ -84,13 +85,10 @@ class TypeRecoveryAgent:
                 levels.get("recovery_followup", "max")
                 if follow_up else levels.get("pass0_type_recovery", "high")
             )
-            response = await self.llm.send(
-                session_id,
-                context,
-                thinking_level=thinking_level,
-                structured_output=get_schema(TypeVerdict),
+            verdict = await send_structured(
+                self.llm, session_id, context,
+                TypeVerdict, thinking_level=thinking_level,
             )
-            verdict = parse_response(TypeVerdict, response)
         finally:
             self.llm.destroy_session(session_id)
 

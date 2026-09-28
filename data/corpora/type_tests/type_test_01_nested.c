@@ -14,6 +14,9 @@
  * - The binary is stripped, so no symbol names help.
  */
 #include <stdint.h>
+
+#define NOINLINE __attribute__((noinline))
+
 #include <stddef.h>
 
 struct inner_item {
@@ -30,6 +33,7 @@ struct record {
 static volatile uint64_t g_sink;
 
 /* partial view #1: touches gs->item / item->id */
+NOINLINE
 static int parse_item(struct inner_item *it) {
     if (it == 0)
         return 0;
@@ -37,6 +41,7 @@ static int parse_item(struct inner_item *it) {
 }
 
 /* partial view #2: touches record->item->tag, record->flags */
+NOINLINE
 static int validate_record(struct record *rec) {
     if (!rec || !rec->item)
         return -1;
@@ -45,6 +50,7 @@ static int validate_record(struct record *rec) {
 }
 
 /* partial view #3: touches record->label, record->flags */
+NOINLINE
 static void summarize_record(struct record *rec) {
     g_sink = (uint64_t)(uintptr_t)rec->label ^ rec->flags;
 }

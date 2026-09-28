@@ -11,6 +11,9 @@
  * No symbols: everything is stripped.
  */
 #include <stdint.h>
+
+#define NOINLINE __attribute__((noinline))
+
 #include <stddef.h>
 
 struct lnode {

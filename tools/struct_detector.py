@@ -9,6 +9,8 @@ do not move them.
 
 from __future__ import annotations
 
+import logging
+
 from pydantic import BaseModel, Field
 
 from reaper.tools._compat import (
@@ -18,6 +20,8 @@ from reaper.tools._compat import (
     _UNARY_SRC_OPS,
     _safe_list,
 )
+
+log = logging.getLogger(__name__)
 
 
 class FieldAccess(BaseModel):
@@ -106,6 +110,55 @@ def _root_var(expr):
     return None
 
 
+# Foundation-only bases that are NEVER a struct the RE should recover:
+# x86-64 TLS canary reads (fsbase + 0x28) and the saved-return-address slot
+# are universal false positives. Compiler register SSA temporaries (rax,
+# rcx_1, rdx_2, ...) are deliberately NOT filtered by name here: at -O2 they
+# legitimately carry struct field accesses (``rcx_1[1]`` == offset 8), and at
+# -O0 their noise is suppressed by the evidence-based indirection drop (a
+# base accessed only at offset 0 with one uniform size and not a sharing
+# node). Keeping them means more candidates for the LLM verdict to REJECT,
+# which is the designed (safe) direction over silently dropping a real type.
+_IGNORED_BASES = frozenset({
+    "fsbase", "gsbase",
+    "__return_addr",
+})
+
+_REGISTER_TEMP_RE = None  # lazy compile
+
+
+def _normalize_base_name(name: str) -> str:
+    """Collapse Binja synthetic SSA temporaries to their family stem.
+
+    -O2 decompilation renames an untyped pointer to per-use SSA temps
+    (``temp0_2``, ``temp0_11``...; also ``rcx_1``/``rdx_2`` register temps).
+    They are the SAME underlying value, so they must share one base for
+    cross-function/offset merging — never be treated as distinct structs.
+    Only the ``tempN`` family is collapseable by name (registers stay
+    distinct — merging e.g. rcx_1 and rdx_2 wrongly would be worse than
+    leaving them separate, and the verdict is the authority anyway).
+    """
+    import re as _re
+    m = _re.match(r"^(temp\d+)_\d+$", name)
+    return m.group(1) if m else name
+
+
+def _is_ignored_base(name: str) -> bool:
+    """True when ``name`` is a compiler foundation base, never user data."""
+    return name in _IGNORED_BASES
+
+
+def _pointee_size(type_str: str) -> int:
+    """Byte size of the pointed-to element for a pointer type string.
+
+    Distinguishes int64_t* (8) from char* (1) — used to scale constant array
+    indices into byte offsets without hard-coding 8 for every pointer.
+    """
+    t = (type_str or "").strip()
+    t = t.rstrip("*").strip(" )").strip()
+    return _type_size(t)
+
+
 class StructAccessDetector:
     """Scan HLIL for pointer+offset patterns indicating struct field accesses.
 
@@ -131,13 +184,16 @@ class StructAccessDetector:
         base_var = _root_var(base_expr)
         if base_var is None or not getattr(base_var, "name", None):
             return
-        self._found.append((func_addr, base_var.name, FieldAccess(
+        base_name = _normalize_base_name(base_var.name)
+        if _is_ignored_base(base_name):
+            return
+        self._found.append((func_addr, base_name, FieldAccess(
             offset=int(access.get("offset", 0)),
             size=int(access.get("size", 8)),
             access_type=access.get("access_type", "read"),
             function_address=func_addr,
             instruction_address=instruction_addr,
-            base_var=base_var.name,
+            base_var=base_name,
         )))
 
     def _deref_access(self, expr, func_addr, write) -> None:
@@ -168,7 +224,40 @@ class StructAccessDetector:
                       "access_type": "write" if write else "read"},
                      _hex(getattr(expr, "address", 0)))
 
+    def _array_index_access(self, expr, func_addr, write) -> None:
+        """``base[k]`` with a COMPILE-TIME k — Binja renders many stripped
+        field accesses this way (e.g. ``arg1[1].w``). A runtime index means
+        array traversal, not a struct field, so it is skipped."""
+        index = getattr(expr, "index", None)
+        if index is None or getattr(index, "operation", None) != Op.HLIL_CONST:
+            return
+        base = getattr(expr, "src", None)
+        root = _root_var(base)
+        elem = 8
+        if root is not None:
+            t = str(getattr(getattr(root, "type", None), "type_str", "") or "")
+            if not t:
+                t = str(getattr(root, "type", "") or "")
+            pe = _pointee_size(t)
+            if pe:
+                elem = pe
+        offset = int(index.constant) * elem
+        self._record(func_addr, base,
+                     {"offset": offset, "size": self._access_size(expr),
+                      "access_type": "write" if write else "read"},
+                     _hex(getattr(expr, "address", 0)))
+
     def _access_size(self, expr) -> int:
+        # Real Binja: HLIL_DEREF / HLIL_ARRAY_INDEX carry the actual byte
+        # width on ``expr.size`` (e.g. 4 for a dword, 2 for a word). Without
+        # this the detector reports 8 for EVERY access and can never see the
+        # overlapping widths that indicate a union.
+        try:
+            size = int(getattr(expr, "size", 0) or 0)
+            if size > 0:
+                return size
+        except (TypeError, ValueError):
+            pass
         for attr in ("type_ref", "var"):
             ref = getattr(expr, attr, None)
             if ref is None:
@@ -209,6 +298,8 @@ class StructAccessDetector:
             for val in _safe_list(getattr(expr, "src", None)):
                 self._walk(val, func_addr, False)
         elif op in _ARRAY_OPS:
+            if op == Op.HLIL_ARRAY_INDEX:
+                self._array_index_access(expr, func_addr, write)
             self._walk(getattr(expr, "src", None), func_addr, write)
             self._walk(getattr(expr, "index", None), func_addr, False)
         elif op in _UNARY_SRC_OPS:
@@ -375,6 +466,31 @@ class StructAccessDetector:
         for func_addr, base_name, acc in self._found:
             within.setdefault((func_addr, base_name), []).append(acc)
 
+        # Compute sharing edges FIRST (within is complete before filtering).
+        sharing_edges = self._sharing_edges()
+
+        # Drop pure-indirection bases: a base accessed ONLY at offset 0 with a
+        # SINGLE uniform size is just ``*ptr`` dereference / register artifact,
+        # NOT struct access. Keep two exceptions: (a) any nonzero offset (a
+        # real field), (b) offset-0 accesses of DIFFERENT sizes (a union
+        # alias), and (c) a base that participates in call-context sharing
+        # (call flow proves the SAME value is a struct even if we only ever
+        # observe offset-0 on it locally). This must NOT break the merge: the
+        # dispatcher that only reads +0 but passes the struct onward stays.
+        sharing_nodes = {
+            node for edge in sharing_edges for node in edge
+        }
+        before = len(within)
+        within = {
+            key: group for key, group in within.items()
+            if any(a.offset != 0 for a in group)
+            or len({a.size for a in group}) > 1
+            or key in sharing_nodes
+        }
+        if len(within) < before:
+            log.debug("struct_detector: dropped %d pure-indirection base(s)",
+                      before - len(within))
+
         # -- union-find over (func_addr, base_name) keys ------------------
         keys = list(within)
         parent = {k: k for k in keys}
@@ -409,7 +525,7 @@ class StructAccessDetector:
                 union(root, k)
 
         # Edge set 2: call-context sharing (SAME DATA TYPE across functions).
-        for a, b in self._sharing_edges():
+        for a, b in sharing_edges:
             if a in within and b in within:
                 union(a, b)
 

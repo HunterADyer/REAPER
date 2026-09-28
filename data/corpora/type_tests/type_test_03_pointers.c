@@ -14,6 +14,9 @@
  * the same struct, NOT three per-row structs.
  */
 #include <stdint.h>
+
+#define NOINLINE __attribute__((noinline))
+
 #include <stddef.h>
 
 struct table_entry {
@@ -23,10 +26,12 @@ struct table_entry {
 
 static volatile uint64_t g_sink;
 
+NOINLINE
 static uint64_t *row_value(struct table_entry *row) {
     return &row->value;                    /* offset 8 */
 }
 
+NOINLINE
 static char *row_name(struct table_entry *row) {
     return row->name;                      /* offset 0 */
 }

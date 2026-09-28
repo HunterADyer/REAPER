@@ -20,6 +20,9 @@
  * into gadget (id/size vs len/kind). Hand-tuning target.
  */
 #include <stdint.h>
+
+#define NOINLINE __attribute__((noinline))
+
 #include <stddef.h>
 
 struct widget { uint32_t id; uint32_t size; };
@@ -28,6 +31,7 @@ struct gadget { uint32_t len; uint32_t kind; };
 static volatile uint64_t g_sink;
 
 /* generic helper: reads first TWO dwords through void* (offset 0 and 4) */
+NOINLINE
 static uint64_t handle_any(const void *p) {
     const uint32_t *u = (const uint32_t *)p;
     return (uint64_t)u[0] << 32 | u[1];   /* accesses +0 and +4 */

@@ -22,20 +22,72 @@ What it prints per binary:
 The verdict uses the live configured LLM if available (llm_client), else a
 no-op stub that accepts EVERYTHING with a placeholder name (so the
 detector results still print).
+
+Note: run with ``python3 -u`` when the LLM verdict is enabled — the xhigh
+reasoning calls are slow and buffered stdout would otherwise show nothing
+until exit.
 """
 
 from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from reaper.tools.struct_detector import StructAccessDetector  # noqa: E402
+
+_CONFIG: dict = {}
+
+
+def _load_config(args) -> dict:
+    config = {}
+    config_path = args.config
+    if config_path and os.path.exists(config_path):
+        with open(config_path, "rb") as fh:
+            config = tomllib.load(fh)
+    return config or {}
+
+def _build_llm(config):
+    """Build a live ReaperLLMClient from config, or return the accept-stub.
+
+    The stub accepts every candidate with a placeholder name (detector-only
+    data still prints). The live client is used when a `[vllm]` section points
+    at a reachable server.
+    """
+    try:
+        section = config.get("vllm") or {}
+        base_url = section.get("base_url")
+        model = section.get("model")
+        if base_url and model:
+            from reaper.harness.llm_client import ReaperLLMClient
+            return ReaperLLMClient(base_url, model, run_id="type_test_corpus",
+                                   max_concurrent=1)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [warn] live LLM unavailable ({exc}); using accept-stub")
+    return _StubLLM()
+
+
+class _StubLLM:
+    """No LLM wired: accept everything, name from the hint (tuning stub)."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def create_session(self, *a, **k):
+        return None
+
+    async def send(self, *a, **k):
+        return '{"accepted": true, "struct_name": "stub_type", "kind": "struct", "fields": []}'
+
+    async def destroy_session(self, *a, **k):
+        return None
 
 
 def _detector_only(binary: Path):
@@ -70,17 +122,7 @@ async def _with_verdict(binary: Path):
         print(f"  [skip] {binary.name}: {exc}")
         return
 
-    class StubLLM:
-        """No LLM wired: accept everything, name from the hint (tuning stub)."""
-
-        async def create_session(self, *a, **k):
-            return None
-
-        async def send(self, *a, **k):
-            return '{"accepted": true, "struct_name": "stub_type", "kind": "struct", "fields": []}'
-
-        async def destroy_session(self, *a, **k):
-            return None
+    llm = _build_llm(_CONFIG)
 
     class StubContext:
         corpus = binary.name
@@ -95,7 +137,7 @@ async def _with_verdict(binary: Path):
                 )
             return "\n".join(rows)
 
-    agent = TypeRecoveryAgent(StubLLM(), StubContext(), {})
+    agent = TypeRecoveryAgent(llm, StubContext(), _CONFIG.get("thinking_levels") or {})
     for c in StructAccessDetector(extractor).find_struct_accesses():
         verdict = await agent.run(c)
         _print_verdict(verdict)
@@ -116,7 +158,12 @@ def main() -> None:
     ap.add_argument("numbers", nargs="*", help="test numbers to run, e.g. 01 04")
     ap.add_argument("--no-llm", action="store_true",
                     help="detector only; skip the LLM verdict stage")
+    ap.add_argument("--config", default=os.path.join(str(ROOT), "configs", "default.toml"),
+                    help="REAPER config (vllm section) for the live verdict LLM")
     args = ap.parse_args()
+
+    global _CONFIG
+    _CONFIG = _load_config(args)
 
     pattern = os.path.join(str(ROOT), "data", "corpora", "type_tests",
                            "type_test_0*.c")
@@ -138,7 +185,8 @@ def main() -> None:
             if args.no_llm:
                 _detector_only(Path(binary))
             else:
-                _with_verdict(Path(binary))
+                import asyncio
+                asyncio.run(_with_verdict(Path(binary)))
 
 
 if __name__ == "__main__":

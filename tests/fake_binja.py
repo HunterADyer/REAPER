@@ -403,8 +403,13 @@ def hlil_ret(*src, address=0):
     return FakeHighLevelILInstruction(Op.HLIL_RET, address=address, src=tuple(src))
 
 
-def deref(src, address=0):
-    return FakeHighLevelILInstruction(Op.HLIL_DEREF, address=address, src=src)
+def deref(src, address=0, size=None, **kw):
+    ins = FakeHighLevelILInstruction(Op.HLIL_DEREF, address=address, src=src)
+    if size is not None:
+        ins.size = size
+    for k, v in kw.items():
+        setattr(ins, k, v)
+    return ins
 
 
 def address_of(src, address=0):
