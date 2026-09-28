@@ -35,6 +35,7 @@ packages = [
     "reaper.eval",
     "reaper.eval.scoring",
     "reaper.eval.heavy",
+    "reaper.eval.heavy.cases",
     "reaper.gui",
 ]
 
