@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from tests.fake_binja import FakeBinaryView
 from tests.fake_harness import RecordingTracer, ScriptedExtractor, StubLLM
 from tests.fake_neo4j import MemoryNeo4jDriver
 from reaper.harness.context import ContextAssembler
@@ -87,6 +88,9 @@ class Fixtures:
     context_asm: ContextAssembler
     bndb_writer: BNDBWriter
     trace_log: Tracer | None = None
+    # "offline" | "live" — set by the runner before run_case(); lets cases
+    # gate exact-name checks (offline only) vs rubric-scored quality (live).
+    mode: str = "offline"
     # Mechanisms may record the expected outcome of their seed here; the
     # runner aggregates this in the report for auditability.
     expected: dict = field(default_factory=dict)
@@ -124,8 +128,7 @@ async def build_fixtures(config_override: dict | None = None) -> Fixtures:
     await ledger.init()
     todo = TodoLedger(str(data_dir / "todo.db"))
     await todo.init()
-    extractor = ScriptedExtractor(bv=__import__("tests.fake_binja",
-                                                fromlist=["FakeBinaryView"]).FakeBinaryView())
+    extractor = ScriptedExtractor(bv=FakeBinaryView())
     context_asm = ContextAssembler(extractor, neo4j, ledger, cfg)
     bndb_writer = BNDBWriter(extractor)
 

@@ -82,14 +82,15 @@ class RenameVariableCase(HeavyCase):
             else:
                 checks.append(self.ok("rename targets the seeded variable"))
 
-        # Offline: scripted response -> exact expected name.
+        # Offline: scripted response -> exact expected name. Live: the rubric
+        # score (score_items) is the quality gate, not string equality.
         pin = None
         for r in renames:
             if r.get("node_id") == VAR_ID:
                 pin = r
         if pin is not None and pin.get("canon_name"):
             fx.extra["recovered_name"] = pin.get("canon_name")
-            if pin.get("canon_name") != EXPECTED_NAME:
+            if fx.mode == "offline" and pin.get("canon_name") != EXPECTED_NAME:
                 checks.append(self.fail(
                     f"expected canon_name {EXPECTED_NAME!r}, got "
                     f"{pin.get('canon_name')!r}"))

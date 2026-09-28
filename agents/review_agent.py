@@ -66,6 +66,13 @@ class ReviewAgent:
         finally:
             self.llm.destroy_session(session_id)
 
+        # Normalize bare rename ids to the STABLE "<func>:<name>" node id
+        # (same defense as RenameVariableAgent). Review is scoped to one
+        # function; any rename whose id has no ':' must belong to it.
+        for rename in result.renames:
+            if rename.node_id and ":" not in str(rename.node_id):
+                rename.node_id = f"{func_address}:{rename.node_id}"
+
         try:
             if self.tracer is not None:
                 await self.tracer.log(

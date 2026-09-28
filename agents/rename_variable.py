@@ -56,6 +56,19 @@ class RenameVariableAgent:
         finally:
             self.llm.destroy_session(session_id)
 
+        # Normalize bare variable names to the STABLE node id. A rename to a
+        # variable inside THIS function must carry the full
+        # "<func_addr>:<name>" id — the graph/builders address nodes by that
+        # stable id. The model is told to echo the id it was given, but live
+        # models frequently return just the bare suffix (e.g. "zmm15" instead
+        # of "0x1400:zmm15"), which Pass 1's _apply_submission would otherwise
+        # mis-parsed as a FUNCTION address (spurious :Function nodes). Because
+        # this run() is strictly one-variable-per-call scoped to
+        # ``func_address``, prefixing is always correct.
+        for rename in result.renames:
+            if rename.node_id and ":" not in str(rename.node_id):
+                rename.node_id = f"{func_address}:{rename.node_id}"
+
         try:
             if self.tracer is not None:
                 await self.tracer.log(

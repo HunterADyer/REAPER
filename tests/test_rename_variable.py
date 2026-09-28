@@ -86,3 +86,26 @@ async def test_run_uses_minimal_thinking_level():
     await agent.run("0x1000", "0x1000:var_18")
     send = [c for c in llm.calls if c["op"] == "send"]
     assert send and send[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_run_normalizes_bare_node_id_to_stable_full_id():
+    """Live-found (2026-09-27): the model returns the bare variable suffix
+    ('var_18') instead of the stable '0x1000:var_18'; Pass 1's dispatcher
+    would mis-read a ':'-less id as a FUNCTION address (spurious :Function
+    nodes + dropped rename). The agent must always scope to its function."""
+    bare = json.dumps({
+        "renames": [{
+            "node_id": "var_18",
+            "llm_name": "input_buffer",
+            "canon_name": "InputBuffer",
+            "justification": "the caller buffer",
+        }],
+        "claims": [],
+    })
+    llm = StubLLM(responses=[bare])
+    agent = RenameVariableAgent(llm, FakeContext(), None, {"thinking_levels": {}})
+    submission = await agent.run("0x1000", "0x1000:var_18")
+    assert len(submission.renames) == 1
+    assert submission.renames[0].node_id == "0x1000:var_18"
+

@@ -68,6 +68,7 @@ async def run_case(case_id: str, mode: str = "offline", n_runs: int = 5,
     fx: Fixtures | None = None
     try:
         fx = await build_fixtures(config_override)
+        fx.mode = mode
         await case.seed(fx)
 
         if mode == "live":
@@ -82,38 +83,38 @@ async def run_case(case_id: str, mode: str = "offline", n_runs: int = 5,
             llm = StubLLM(responses=list(case.scripted_responses(fx)))
         try:
             await case.run_case(fx, llm)
+
+            checks = [
+                {"passed": c.passed, "message": c.message}
+                for c in await case.assert_expected(fx)
+            ]
+            report: dict = {
+                "case_id": case_id,
+                "description": case.description,
+                "mechanisms": list(case.mechanisms),
+                "mode": mode,
+                "checks": checks,
+                "passed": bool(checks) and all(c["passed"] for c in checks),
+                "expected": fx.expected,
+                "trace": getattr(fx.tracer, "events", []),
+            }
+            # Live mode: score the mechanism output with the rubric engine
+            # BEFORE closing the client.
+            items = case.score_items(fx)
+            if mode == "live" and items:
+                from reaper.eval.scoring.scheduler import ScoreScheduler
+
+                scheduler = ScoreScheduler(llm, n_runs=n_runs)
+                report["score"] = await scheduler.score(
+                    {k: v for k, v in items.items() if v}
+                )
         finally:
-            if hasattr(llm, "close"):
-                if asyncio.iscoroutinefunction(llm.close):
-                    await llm.close()
-                else:
-                    llm.close()
-
-        checks = [
-            {"passed": c.passed, "message": c.message}
-            for c in await case.assert_expected(fx)
-        ]
-        report: dict = {
-            "case_id": case_id,
-            "description": case.description,
-            "mechanisms": list(case.mechanisms),
-            "mode": mode,
-            "checks": checks,
-            "passed": bool(checks) and all(c["passed"] for c in checks),
-            "expected": fx.expected,
-            "trace": getattr(fx.tracer, "events", []),
-        }
-        # Live mode: score the mechanism output with the rubric engine.
-        items = case.score_items(fx)
-        if mode == "live" and items:
-            from reaper.eval.scoring.scheduler import ScoreScheduler
-
-            scheduler = ScoreScheduler(llm, n_runs=n_runs)
-            report["score"] = await scheduler.score(
-                {k: v for k, v in items.items() if v}
-            )
             try:
-                await llm.close()
+                if hasattr(llm, "close"):
+                    if asyncio.iscoroutinefunction(llm.close):
+                        await llm.close()
+                    else:
+                        llm.close()
             except Exception:  # noqa: BLE001
                 pass
         return report

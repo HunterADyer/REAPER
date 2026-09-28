@@ -102,11 +102,12 @@ class LogicConclusionCase(HeavyCase):
             if not t.get("start_position"):
                 checks.append(self.fail("task without start_position"))
 
-        # Offline exact-name check on the seeded target variable.
+        # Offline exact-name check on the seeded target variable; live mode is
+        # gated by the rubric score instead.
         pin = next((r for r in renames if r.get("node_id") == VAR_A), None)
         if pin is not None:
             fx.extra["recovered_name"] = pin.get("canon_name") or pin.get("llm_name")
-            if fx.extra["recovered_name"] != fx.expected.get("expected_name"):
+            if fx.mode == "offline" and fx.extra["recovered_name"] != fx.expected.get("expected_name"):
                 checks.append(self.fail(
                     f"expected rename {fx.expected['expected_name']!r}, got "
                     f"{fx.extra['recovered_name']!r}"))

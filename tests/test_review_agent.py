@@ -75,3 +75,24 @@ async def test_review_agent_allows_empty_output():
     agent = ReviewAgent(llm, FakeContext(), None, {"thinking_levels": {}})
     result = await agent.run("0x2000")
     assert result.renames == [] and result.claims == [] and result.tasks == []
+
+
+@pytest.mark.asyncio
+async def test_review_agent_normalizes_bare_rename_node_id():
+    """Mirror of the rename-agent rule: review renames flow straight into the
+    merge agent, which reads the STABLE node id — a bare suffix ('var_18')
+    would break node resolution. Scope to the reviewed function."""
+    bare = json.dumps({
+        "renames": [{
+            "node_id": "var_18", "llm_name": "cursor",
+            "canon_name": "Cursor", "justification": "list cursor",
+        }],
+        "claims": [],
+        "tasks": [],
+    })
+    llm = StubLLM(responses=[bare])
+    agent = ReviewAgent(llm, FakeContext(), None, {"thinking_levels": {}})
+    result = await agent.run("0x1000")
+    assert len(result.renames) == 1
+    assert result.renames[0].node_id == "0x1000:var_18"
+
